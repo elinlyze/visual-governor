@@ -1,0 +1,4 @@
+[submodule "src/private"]
+	path = src/private
+	url = ../visual-governor-private.git
+	branch = main

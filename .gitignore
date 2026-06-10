@@ -1,5 +1,4 @@
-# Local/private backend junction. Keep this out of the public repository.
-/src/private/
+
 
 # Build/output
 /build/
