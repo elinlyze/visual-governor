@@ -37,8 +37,8 @@ constexpr int kMaxGovernorTier = kGovernorTierCount - 1;
 struct Config
 {
     bool windowVisible = false;             // standalone debug window; settings live in the Nexus addon settings panel
-    bool tierOverlayVisible = false;        // tiny movable current-tier overlay
-    bool controllerEnabled = false;
+    bool tierOverlayVisible = true;         // tiny movable current-tier overlay
+    bool controllerEnabled = true;
     bool tracerEnabled = false;
     bool liveWritesEnabled = true;
     bool stagedApplyEnabled = true;
@@ -87,11 +87,11 @@ struct Config
     float probeWarmupSeconds = 1.1f;           // ignore immediate apply/rebuild turbulence during an upshift probe
     float probeRollbackSeconds = 1.25f;        // sustained bad time required before rolling back a probe
     float maxProbeBackoffSeconds = 160.0f;     // exponential failed-probe backoff cap
-    std::array<int, kStoredTierSlots> tierLimitValues{ 4, 3, 2, 1, 0 };
-    std::array<int, kStoredTierSlots> tierQualityValues{ 4, 3, 2, 1, 0 };
+    std::array<int, kStoredTierSlots> tierLimitValues{ 3, 1, 1, 0, 0 };
+    std::array<int, kStoredTierSlots> tierQualityValues{ 3, 2, 1, 0, 0 };
     bool fullGearMatrixEnabled = true;
     bool extraGearLiveApplyEnabled = true;    // v35: full graphics matrix live-apply is enabled; individual rows can still be disabled.
-    int extraGearApplySpacingMs = 350;        // v36: spread renderer-affecting graphics setters across frames; do not hammer GW2's GsContext packer.
+    int extraGearApplySpacingMs = 50;         // current release default: keep tier-row applies responsive while still queued.
     bool extraGearSkipUnchanged = false;      // v44: manual/UI applies force rows; default off avoids stale renderer state when raw fields already match.
     std::array<ExtraGearConfig, kExtraGearSettingCount> extraGears{};
 } g_cfg;
@@ -259,49 +259,48 @@ void InitExtraGearDefaults()
             int value = d.maxValue - static_cast<int>((static_cast<float>(t) / static_cast<float>(kMaxGovernorTier)) * static_cast<float>(span) + 0.5f);
             c.value[static_cast<size_t>(t)] = std::clamp(value, d.minValue, d.maxValue);
         }
-        c.value[4] = c.value[3]; // legacy hidden slot; not shown/applied in v44.
+        c.value[4] = c.value[3]; // legacy hidden slot; not shown/applied.
         c.enabled = true;
     }
-    // v35: all official graphics rows are part of the automatic governor by default.
-    // v41: keep the unsupported/candidate Hide Ally Visual Effects row opt-in. It is
-    // a real setter entry, but it is not part of the normal visible graphics-options
-    // pack in all clients and is not needed for "all official graphics settings".
-    // Users can still enable it manually from the table when testing that row.
 
-    // v44: four visible tiers only: T0 best visuals, T3 lowest automatic tier.
-    // Keep texture quality high by default; texture detail is mostly VRAM/streaming
-    // pressure, so dropping it makes the game look broken without helping frame time much.
-    g_cfg.extraGears[0].value  = { 2, 1, 1, 0, 0 }; // Animation: high, medium, medium, low.
-    g_cfg.extraGears[1].value  = { 3, 2, 1, 1, 1 }; // Antialiasing: SMAA high, SMAA low, FXAA, FXAA.
-    g_cfg.extraGears[2].value  = { 1, 1, 1, 0, 0 }; // Environment: GW2 native setter is 0/1 only (low/high).
-    g_cfg.extraGears[3].value  = { 3, 2, 1, 1, 1 }; // LOD distance.
-    g_cfg.extraGears[4].value  = { 2, 1, 1, 0, 0 }; // Reflections.
-    g_cfg.extraGears[5].value  = { 2, 1, 1, 1, 1 }; // Render sampling: do not default to subsample.
-    g_cfg.extraGears[6].value  = { 2, 2, 1, 0, 0 }; // Shaders.
-    g_cfg.extraGears[7].value  = { 4, 3, 2, 1, 1 }; // Shadows: ultra, high, medium, low.
-    g_cfg.extraGears[8].value  = { 3, 2, 1, 1, 1 }; // Shadow resolution, only used with custom.
-    g_cfg.extraGears[9].value  = { 3, 2, 1, 1, 1 }; // Shadow cascades, only used with custom.
-    g_cfg.extraGears[10].value = { 2, 2, 2, 2, 2 }; // Textures stay high by default.
-    g_cfg.extraGears[11].value = { 3, 2, 1, 1, 1 }; // Postprocessing.
-    g_cfg.extraGears[12].value = { 1, 1, 1, 1, 1 }; // Best Texture Filtering stays on.
-    g_cfg.extraGears[13].value = { 1, 1, 1, 1, 1 }; // Effect LOD stays on by default.
-    g_cfg.extraGears[14].value = { 1, 1, 1, 0, 0 }; // High-res characters.
-    g_cfg.extraGears[15].value = { 1, 1, 1, 1, 1 }; // Vertical Sync row retained, but not governed by default.
-    g_cfg.extraGears[16].value = { 1, 1, 0, 0, 0 }; // Screen-space shadows.
-    g_cfg.extraGears[15].enabled = false;            // Do not let the governor fight the user's presentation/cap setting.
-    g_cfg.extraGears[17].enabled = false;            // Hide Ally Effects candidate: opt-in only.
+    // v71 release defaults: these match the author's current tested profile.
+    // Tier 0 is not absolute max-everything; it is the normal high-quality baseline
+    // that has proven stable for live startup sync and automatic governor movement.
+    auto setRow = [](size_t n, bool enabled, std::array<int, kStoredTierSlots> values)
+    {
+        if (n >= g_cfg.extraGears.size()) { return; }
+        g_cfg.extraGears[n].enabled = enabled;
+        g_cfg.extraGears[n].value = values;
+    };
+
+    setRow(0,  true,  { 2, 1, 1, 0, 0 }); // Animation: high, medium, medium, low.
+    setRow(1,  true,  { 3, 3, 2, 1, 1 }); // Antialiasing: SMAA high, SMAA high, SMAA low, FXAA.
+    setRow(2,  true,  { 1, 1, 0, 0, 0 }); // Environment.
+    setRow(3,  true,  { 3, 2, 1, 1, 1 }); // LOD distance.
+    setRow(4,  true,  { 1, 1, 0, 0, 0 }); // Reflections.
+    setRow(5,  true,  { 2, 2, 1, 1, 1 }); // Render sampling: supersample, supersample, native, native.
+    setRow(6,  true,  { 2, 2, 2, 0, 0 }); // Shaders.
+    setRow(7,  true,  { 1, 1, 1, 1, 1 }); // Shadows: low presets for stable live changes.
+    setRow(8,  false, { 3, 2, 1, 1, 1 }); // Shadow resolution: kept for Custom, disabled by default.
+    setRow(9,  false, { 3, 2, 1, 1, 1 }); // Shadow cascades: kept for Custom, disabled by default.
+    setRow(10, true,  { 2, 2, 2, 2, 2 }); // Textures stay high.
+    setRow(11, true,  { 0, 0, 0, 0, 0 }); // Postprocessing off.
+    setRow(12, true,  { 1, 1, 1, 0, 0 }); // Best Texture Filtering.
+    setRow(13, true,  { 1, 1, 1, 1, 1 }); // Effect LOD.
+    setRow(14, true,  { 1, 1, 1, 0, 0 }); // High-res character textures.
+    setRow(15, true,  { 1, 1, 0, 0, 0 }); // Screen-space shadows.
+    setRow(16, false, { 4, 3, 1, 0, 0 }); // Hide Ally Effects candidate: opt-in only.
 }
-
 void ApplyV44FourTierDefaults()
 {
     g_cfg.minTier = 0;
     g_cfg.maxTier = kMaxGovernorTier;
     g_cfg.startTier = std::clamp(g_cfg.startTier, 0, kMaxGovernorTier);
-    g_cfg.tierLimitValues = { 4, 3, 2, 1, 0 };
-    g_cfg.tierQualityValues = { 4, 3, 2, 1, 0 };
+    g_cfg.tierLimitValues = { 3, 1, 1, 0, 0 };
+    g_cfg.tierQualityValues = { 3, 2, 1, 0, 0 };
     InitExtraGearDefaults();
     g_cfg.extraGearSkipUnchanged = false;
-    if (g_cfg.extraGearApplySpacingMs < 350) { g_cfg.extraGearApplySpacingMs = 350; }
+    if (g_cfg.extraGearApplySpacingMs < 50) { g_cfg.extraGearApplySpacingMs = 50; }
 }
 
 struct State
@@ -404,7 +403,7 @@ void SaveConfig()
     try
     {
         std::ofstream out(g_configPath, std::ios::binary | std::ios::trunc);
-        out << "configVersion=70\n";
+        out << "configVersion=71\n";
         out << "windowVisible=" << (g_cfg.windowVisible ? 1 : 0) << "\n";
         out << "tierOverlayVisible=" << (g_cfg.tierOverlayVisible ? 1 : 0) << "\n";
         out << "controllerEnabled=" << (g_cfg.controllerEnabled ? 1 : 0) << "\n";
@@ -678,7 +677,7 @@ void LoadConfig()
     // explicitly re-enable it after v41 if they want to test that row.
     if (!sawAllGraphicsGovernorV41)
     {
-        g_cfg.extraGears[17].enabled = false;
+        if (kExtraGearDefs.size() > 16) { g_cfg.extraGears[16].enabled = false; }
     }
 
     // v43 migration: configs written by v35-v42 used Shadows=custom as the

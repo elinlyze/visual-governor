@@ -486,7 +486,10 @@ void AddonLoad(AddonAPI_t* api)
     InitPaths();
     InitExtraGearDefaults();
     LoadConfig();
-    std::ofstream(g_tracePath, std::ios::binary | std::ios::app) << "\n=== addon load " << NowString() << " ===\n";
+    if (g_cfg.tracerEnabled)
+    {
+        std::ofstream(g_tracePath, std::ios::binary | std::ios::app) << "\n=== addon load " << NowString() << " ===\n";
+    }
     VisualBackendInitialize();
     g_state.currentTier = ClampTierToConfiguredRange(g_cfg.startTier);
     VisualBackendInstallHooks();
