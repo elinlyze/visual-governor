@@ -1,0 +1,20 @@
+# Local/private backend junction. Keep this out of the public repository.
+/src/private/
+
+# Build/output
+/build/
+/out/
+/.vs/
+*.user
+*.suo
+*.obj
+*.pdb
+*.ilk
+*.dll
+*.lib
+*.exp
+
+# Local runtime logs/config copies
+/addons/
+*.log
+config.ini
