@@ -12,6 +12,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -146,9 +147,9 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef()
         AddonSignature,
         NEXUS_API_VERSION,
         AddonName,
-        { 0, 71, 1, 0 },
+        { 0, 80, 0, 0 },
         "local build",
-        "Automatic visual settings governor with tiered graphics profiles, startup-safe renderer gating, memtools-backed signature resolving, and optional mini tier overlay.",
+        "Personal rescue build: v80 removes the WndProc/native-pump experiment, keeps v76 crash-safe live applies, memtools, overlay persistence, and thread audit logging.",
         AddonLoad,
         AddonUnload,
         AF_None,

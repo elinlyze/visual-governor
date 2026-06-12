@@ -1,4 +1,4 @@
 [submodule "src/private"]
 	path = src/private
-	url = https://github.com/elinlyze/visual-governor-private.git
+	url = ../visual-governor-private.git
 	branch = main

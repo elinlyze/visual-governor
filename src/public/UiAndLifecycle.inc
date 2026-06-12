@@ -304,6 +304,12 @@ void DrawDebugStatsContent()
         backend.shadowContextCaptured ? "yes" : "no",
         static_cast<unsigned long long>(backend.shadowCaptures),
         static_cast<unsigned long long>(backend.shadowRefreshes));
+    ImGui::Text("Threads: render=%lu gw2=%lu current=%lu nativeCalls=%llu mismatch=%llu",
+        static_cast<unsigned long>(backend.renderThreadId),
+        static_cast<unsigned long>(backend.gw2ThreadId),
+        static_cast<unsigned long>(backend.currentThreadId),
+        static_cast<unsigned long long>(backend.nativeApplyCalls),
+        static_cast<unsigned long long>(backend.nativeApplyThreadMismatches));
 
     DrawSectionLabel("Manual/debug tools");
     ImGui::SliderInt("Manual Character Model Limit", &g_cfg.manualLimitValue, 0, 4, "%d");
@@ -352,26 +358,86 @@ void DrawDebugStatsContent()
     ImGui::Checkbox("Use staged apply queue", &g_cfg.stagedApplyEnabled);
     ImGui::DragInt("Apply step delay ms", &g_cfg.stagedApplyDelayMs, 5, 0, 1000);
     if (ImGui::Button("Refresh observed")) { VisualBackendRefreshObserved(); TraceLine("Manual refresh observed values."); }
+
+    DrawSectionLabel("Options bool probe");
+    ImGui::TextWrapped("For Standard Enemy/Friendly Models: press Baseline, toggle one GW2 Options checkbox, then press Diff. Keep only one native option change between captures.");
+    if (ImGui::Button("Probe baseline before native toggle"))
+    {
+        g_cfg.tracerEnabled = true;
+        VisualBackendCaptureOptionsProbeBaseline("manual-baseline");
+        VisualBackendLogOptionsProbeKnownFields("manual-baseline");
+        g_state.status = "Options probe baseline captured.";
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Probe diff after native toggle"))
+    {
+        g_cfg.tracerEnabled = true;
+        VisualBackendDiffOptionsProbe("manual-after-toggle");
+        VisualBackendLogOptionsProbeKnownFields("manual-after-toggle");
+        g_state.status = "Options probe diff written to settings trace.";
+    }
+    if (ImGui::Button("Marker: before Standard Enemy Models toggle"))
+    {
+        g_cfg.tracerEnabled = true;
+        TraceLine("USER_MARKER before Standard Enemy Models toggle");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Marker: after Standard Enemy Models toggle"))
+    {
+        g_cfg.tracerEnabled = true;
+        TraceLine("USER_MARKER after Standard Enemy Models toggle");
+    }
+    if (ImGui::Button("Marker: before Standard Friendly Models toggle"))
+    {
+        g_cfg.tracerEnabled = true;
+        TraceLine("USER_MARKER before Standard Friendly Models toggle");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Marker: after Standard Friendly Models toggle"))
+    {
+        g_cfg.tracerEnabled = true;
+        TraceLine("USER_MARKER after Standard Friendly Models toggle");
+    }
 }
 
 void DrawTierOverlay()
 {
     if (!g_cfg.tierOverlayVisible) { return; }
+
+    static bool initialPosApplied = false;
+    if (g_cfg.tierOverlayPosValid && !initialPosApplied)
+    {
+        ImGui::SetNextWindowPos(ImVec2(g_cfg.tierOverlayPosX, g_cfg.tierOverlayPosY), ImGuiCond_Always);
+        initialPosApplied = true;
+    }
+    else
+    {
+        ImGui::SetNextWindowPos(ImVec2(18.0f, 120.0f), ImGuiCond_FirstUseEver);
+    }
+
     ImGui::SetNextWindowSize(ImVec2(72, 30), ImGuiCond_FirstUseEver);
     ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize
         | ImGuiWindowFlags_NoTitleBar
         | ImGuiWindowFlags_NoCollapse
-        | ImGuiWindowFlags_NoScrollbar
-        | ImGuiWindowFlags_NoSavedSettings;
+        | ImGuiWindowFlags_NoScrollbar;
     if (ImGui::Begin(TierOverlayWindowName, nullptr, flags))
     {
         ImGui::Text("Tier %d", g_state.currentTier);
+        ImVec2 p = ImGui::GetWindowPos();
+        if (!g_cfg.tierOverlayPosValid || std::fabs(g_cfg.tierOverlayPosX - p.x) > 0.5f || std::fabs(g_cfg.tierOverlayPosY - p.y) > 0.5f)
+        {
+            g_cfg.tierOverlayPosValid = true;
+            g_cfg.tierOverlayPosX = p.x;
+            g_cfg.tierOverlayPosY = p.y;
+        }
     }
     ImGui::End();
 }
 
+
 void DrawWindow()
 {
+    VisualBackendMarkRenderThread();
     static auto last = std::chrono::steady_clock::now();
     auto now = std::chrono::steady_clock::now();
     float dt = std::chrono::duration<float>(now - last).count();

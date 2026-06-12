@@ -38,6 +38,9 @@ struct Config
 {
     bool windowVisible = false;             // standalone debug window; settings live in the Nexus addon settings panel
     bool tierOverlayVisible = true;         // tiny movable current-tier overlay
+    bool tierOverlayPosValid = false;
+    float tierOverlayPosX = 18.0f;
+    float tierOverlayPosY = 120.0f;
     bool controllerEnabled = true;
     bool tracerEnabled = false;
     bool liveWritesEnabled = true;
@@ -114,6 +117,11 @@ struct VisualBackendStatus
     int observedQuality = -1;
     uint64_t shadowCaptures = 0;
     uint64_t shadowRefreshes = 0;
+    uint32_t renderThreadId = 0;
+    uint32_t gw2ThreadId = 0;
+    uint32_t currentThreadId = 0;
+    uint64_t nativeApplyCalls = 0;
+    uint64_t nativeApplyThreadMismatches = 0;
     std::string summary = "not initialized";
 };
 
@@ -123,6 +131,10 @@ void VisualBackendInstallHooks();
 void VisualBackendShutdown();
 void VisualBackendRefreshObserved();
 void VisualBackendNotifyLoadingEnter();
+void VisualBackendMarkRenderThread();
+void VisualBackendCaptureOptionsProbeBaseline(const char* label);
+void VisualBackendDiffOptionsProbe(const char* label);
+void VisualBackendLogOptionsProbeKnownFields(const char* label);
 
 const char* NameFromList(const char* const* names, int count, int v)
 {
@@ -403,9 +415,12 @@ void SaveConfig()
     try
     {
         std::ofstream out(g_configPath, std::ios::binary | std::ios::trunc);
-        out << "configVersion=71\n";
+        out << "configVersion=80\n";
         out << "windowVisible=" << (g_cfg.windowVisible ? 1 : 0) << "\n";
         out << "tierOverlayVisible=" << (g_cfg.tierOverlayVisible ? 1 : 0) << "\n";
+        out << "tierOverlayPosValid=" << (g_cfg.tierOverlayPosValid ? 1 : 0) << "\n";
+        out << "tierOverlayPosX=" << g_cfg.tierOverlayPosX << "\n";
+        out << "tierOverlayPosY=" << g_cfg.tierOverlayPosY << "\n";
         out << "controllerEnabled=" << (g_cfg.controllerEnabled ? 1 : 0) << "\n";
         out << "tracerEnabled=" << (g_cfg.tracerEnabled ? 1 : 0) << "\n";
         out << "liveWritesEnabled=" << (g_cfg.liveWritesEnabled ? 1 : 0) << "\n";
@@ -522,6 +537,9 @@ void LoadConfig()
             if (k == "configVersion") { configVersion = i(); }
             else if (k == "windowVisible") { g_cfg.windowVisible = i() != 0; }
             else if (k == "tierOverlayVisible") { g_cfg.tierOverlayVisible = i() != 0; }
+            else if (k == "tierOverlayPosValid") { g_cfg.tierOverlayPosValid = i() != 0; }
+            else if (k == "tierOverlayPosX") { g_cfg.tierOverlayPosX = f(); }
+            else if (k == "tierOverlayPosY") { g_cfg.tierOverlayPosY = f(); }
             else if (k == "controllerEnabled") { g_cfg.controllerEnabled = i() != 0; }
             else if (k == "tracerEnabled") { g_cfg.tracerEnabled = i() != 0; }
             else if (k == "liveWritesEnabled") { g_cfg.liveWritesEnabled = i() != 0; }
@@ -826,6 +844,8 @@ void LoadConfig()
     g_cfg.probeWarmupSeconds = std::clamp(g_cfg.probeWarmupSeconds, 0.0f, 5.0f);
     g_cfg.probeRollbackSeconds = std::clamp(g_cfg.probeRollbackSeconds, 0.05f, 5.0f);
     g_cfg.maxProbeBackoffSeconds = std::clamp(g_cfg.maxProbeBackoffSeconds, 10.0f, 600.0f);
+    g_cfg.tierOverlayPosX = std::clamp(g_cfg.tierOverlayPosX, -10000.0f, 10000.0f);
+    g_cfg.tierOverlayPosY = std::clamp(g_cfg.tierOverlayPosY, -10000.0f, 10000.0f);
     if (g_cfg.minTier > g_cfg.maxTier) { std::swap(g_cfg.minTier, g_cfg.maxTier); }
     for (int t = 0; t < 5; ++t)
     {
