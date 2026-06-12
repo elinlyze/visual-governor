@@ -251,6 +251,7 @@ void DrawGovernorTuningControls()
     ImGui::DragFloat("Probe backoff after failed probe", &g_cfg.upProbeBackoffSeconds, 1.0f, 0.0f, 300.0f, "%.0f");
     ImGui::DragFloat("Max probe backoff seconds", &g_cfg.maxProbeBackoffSeconds, 5.0f, 10.0f, 600.0f, "%.0f");
     ImGui::DragFloat("Probe warmup seconds", &g_cfg.probeWarmupSeconds, 0.1f, 0.0f, 5.0f, "%.1f");
+    g_cfg.probeWarmupSeconds = EffectiveProbeWarmupSeconds();
     ImGui::DragFloat("Probe rollback bad seconds", &g_cfg.probeRollbackSeconds, 0.1f, 0.05f, 5.0f, "%.2f");
     ImGui::DragFloat("Apply spacing / cooldown seconds", &g_cfg.cooldownSeconds, 0.1f, 0.0f, 10.0f, "%.1f");
     ImGui::DragFloat("Emergency hold seconds", &g_cfg.emergencySeconds, 0.1f, 0.1f, 10.0f, "%.1f");
@@ -473,18 +474,18 @@ void DrawTierOverlay()
 void DrawWindow()
 {
     VisualBackendMarkRenderThread();
-    static auto last = std::chrono::steady_clock::now();
-    auto now = std::chrono::steady_clock::now();
-    float dt = std::chrono::duration<float>(now - last).count();
-    last = now;
+    float dt = ImGui::GetIO().DeltaTime;
+    if (dt <= 0.0f || dt > 5.0f) { dt = 0.0f; }
+
+    UpdateGovernor(dt);
+
     g_state.uiFpsRefreshTimer -= dt;
     if (g_state.uiFpsRefreshTimer <= 0.0f)
     {
-        g_state.uiFps = g_state.fps;
+        g_state.uiFps = g_state.emaFps;
         g_state.uiFpsRefreshTimer = 0.25f;
     }
 
-    UpdateGovernor(dt);
     UpdateStartupProfileApply(dt);
     UpdateStagedApply(dt);
     UpdateExtraGearQueue(dt);
@@ -560,14 +561,15 @@ void InitPaths()
     if (g_addonDir.empty()) { g_addonDir = (std::filesystem::path(ModuleDirectory()) / L"visual_governor").wstring(); }
     g_addonDir = AddSlash(g_addonDir);
     try { std::filesystem::create_directories(std::filesystem::path(g_addonDir)); } catch (...) {}
-    g_configPath = (std::filesystem::path(g_addonDir) / L"config.ini").wstring();
+    g_configPath = (std::filesystem::path(g_addonDir) / L"config.json").wstring();
     try
     {
         std::filesystem::path oldDir = std::filesystem::path(ModuleDirectory()) / L"gw2_visual_governor";
         std::filesystem::path oldConfig = oldDir / L"config.ini";
-        if (!std::filesystem::exists(std::filesystem::path(g_configPath)) && std::filesystem::exists(oldConfig))
+        std::filesystem::path newIni = std::filesystem::path(g_addonDir) / L"config.ini";
+        if (!std::filesystem::exists(newIni) && !std::filesystem::exists(std::filesystem::path(g_configPath)) && std::filesystem::exists(oldConfig))
         {
-            std::filesystem::copy_file(oldConfig, std::filesystem::path(g_configPath), std::filesystem::copy_options::skip_existing);
+            std::filesystem::copy_file(oldConfig, newIni, std::filesystem::copy_options::skip_existing);
         }
     } catch (...) {}
     g_tracePath = (std::filesystem::path(g_addonDir) / L"settings-write-trace.log").wstring();
@@ -600,15 +602,15 @@ void AddonLoad(AddonAPI_t* api)
         g_api->GUI_Register(RT_Render, DrawWindow);
         g_api->GUI_Register(RT_OptionsRender, DrawOptions);
     }
-    if (g_api && g_api->GUI_RegisterCloseOnEscape) { g_api->GUI_RegisterCloseOnEscape(WindowName, &g_cfg.windowVisible); }
+    // Do not register the debug window for Nexus close-on-Escape. Users often hit Esc
+    // during gameplay/menu flow, and the debug window should stay open until closed
+    // through its own X button or the Options panel toggle.
     if (g_api && g_api->InputBinds_RegisterWithString) { g_api->InputBinds_RegisterWithString(KeybindToggle, OnToggle, "ALT+SHIFT+V"); }
     Log(LOGL_INFO, "Loaded.");
 }
 
 void AddonUnload()
 {
-    SaveConfig();
-    VisualBackendShutdown();
     if (g_api && g_api->GUI_Deregister)
     {
         g_api->GUI_Deregister(DrawWindow);
@@ -616,6 +618,8 @@ void AddonUnload()
     }
     if (g_api && g_api->GUI_DeregisterCloseOnEscape) { g_api->GUI_DeregisterCloseOnEscape(WindowName); }
     if (g_api && g_api->InputBinds_Deregister) { g_api->InputBinds_Deregister(KeybindToggle); }
+    SaveConfig();
+    VisualBackendShutdown();
     Log(LOGL_INFO, "Unloaded.");
     g_api = nullptr;
 }

@@ -82,6 +82,12 @@ float EmergencyFrameMs()
     return FpsToMs(EffectiveMinimumFps());
 }
 
+float EffectiveProbeWarmupSeconds()
+{
+    const float maxWarmup = std::max(0.0f, g_cfg.upProbeSeconds - 0.25f);
+    return std::min(std::clamp(g_cfg.probeWarmupSeconds, 0.0f, 5.0f), maxWarmup);
+}
+
 void ResetFrameStats(float frameMs)
 {
     frameMs = std::clamp(frameMs, 0.1f, 1000.0f);
@@ -118,16 +124,13 @@ void PushFrameSample(float frameMs)
     g_state.frameMsIndex = (g_state.frameMsIndex + 1) % static_cast<int>(g_state.frameMsWindow.size());
     g_state.frameMsCount = std::min<int>(g_state.frameMsCount + 1, static_cast<int>(g_state.frameMsWindow.size()));
 
-    std::vector<float> samples;
-    samples.reserve(static_cast<size_t>(g_state.frameMsCount));
-    for (int i = 0; i < g_state.frameMsCount; ++i)
+    if (g_state.frameMsCount > 0)
     {
-        samples.push_back(g_state.frameMsWindow[static_cast<size_t>(i)]);
-    }
-    if (!samples.empty())
-    {
-        std::sort(samples.begin(), samples.end());
-        size_t idx = static_cast<size_t>(std::clamp<int>(static_cast<int>(samples.size() * 95 / 100), 0, static_cast<int>(samples.size() - 1)));
+        std::array<float, 240> samples = g_state.frameMsWindow;
+        auto begin = samples.begin();
+        auto end = begin + g_state.frameMsCount;
+        std::sort(begin, end);
+        size_t idx = static_cast<size_t>(std::clamp<int>(g_state.frameMsCount * 95 / 100, 0, g_state.frameMsCount - 1));
         g_state.p95FrameMs = samples[idx];
     }
 }
@@ -158,7 +161,6 @@ void ApplyGovernorPreset(int preset)
 {
     preset = std::clamp(preset, 0, 2);
     g_cfg.governorPreset = preset;
-    g_cfg.frameTimeGovernor = true;
     g_cfg.nexusLoadingGuardEnabled = true;
     g_cfg.stagedApplyDelayMs = 12;
     g_cfg.liveWritesEnabled = true;
@@ -348,9 +350,8 @@ void ResetAutoDecisionTimers(bool keepBackoff = true)
     if (!keepBackoff) { g_state.probeBackoff = 0.0f; g_state.failedProbeCount = 0; }
 }
 
-void ApplyTier(int tier, const char* reason, bool bypassConfiguredRange = false)
+void ApplyTier(int tier, const char* reason)
 {
-    (void)bypassConfiguredRange; // v49: user min/max is a hard safety range, even for emergency paths.
     const int requestedTier = std::clamp(tier, 0, kMaxGovernorTier);
     tier = ClampTierToConfiguredRange(requestedTier);
     if (tier == g_state.currentTier)
@@ -430,14 +431,7 @@ bool StartupProfileApplyBlockedByLoading()
         if (link)
         {
             const bool gameplay = link->IsGameplay;
-            if (gameplay)
-            {
-                g_state.startupProfileApplySeenGameplay = true;
-            }
-            else
-            {
-                return true;
-            }
+            if (!gameplay) { return true; }
         }
     }
 
@@ -637,7 +631,7 @@ void UpdateGovernor(float dt)
         g_state.autoState = "upshift-probe";
         g_state.probeTimer += dt;
 
-        const bool probeMayJudge = g_state.probeTimer >= g_cfg.probeWarmupSeconds;
+        const bool probeMayJudge = g_state.probeTimer >= EffectiveProbeWarmupSeconds();
         // Probe rollback is intentionally less twitchy than normal downshift.
         // A one-tier upshift is an experiment; minor P95 jitter at a frame cap should not immediately
         // undo it. Hard bad rolls back quickly; soft bad only leaks into the rollback timer slowly.
@@ -687,6 +681,42 @@ void UpdateGovernor(float dt)
 
         if (g_state.probeTimer >= g_cfg.upProbeSeconds)
         {
+            // The probe duration expiring is not enough by itself. If the current end-state
+            // is already bad enough that the normal governor would reject this tier, treat
+            // the probe as failed and start the same backoff as a rollback timer failure.
+            // This avoids "accepted" probes that immediately downshift a few frames later.
+            if (!stableCandidate || probeHardBad)
+            {
+                int rollback = std::clamp(g_state.probeRollbackTier, g_cfg.minTier, g_cfg.maxTier);
+                ++g_state.failedProbeCount;
+                const float backoff = FailedProbeBackoffSeconds();
+                std::ostringstream ss;
+                ss << "probe failed end-state rollback tier " << g_state.currentTier << " -> " << rollback
+                   << " fps=" << std::fixed << std::setprecision(1) << g_state.fps
+                   << " ema=" << g_state.emaFps
+                   << " fastMs=" << std::setprecision(2) << g_state.fastFrameMs
+                   << " slowMs=" << g_state.slowFrameMs
+                   << " p95Ms=" << g_state.p95FrameMs
+                   << " stable=" << (stableCandidate ? "yes" : "no")
+                   << " overBudget=" << (overBudget ? "yes" : "no")
+                   << " hardBad=" << (probeHardBad ? "yes" : "no")
+                   << " softBad=" << (probeSoftBad ? "yes" : "no")
+                   << " badTimer=" << g_state.probeBadTimer
+                   << " backoff=" << backoff
+                   << " failures=" << g_state.failedProbeCount;
+                AutoStateLog(ss.str());
+                ApplyTier(rollback, "probe-rollback");
+                g_state.inUpshiftProbe = false;
+                g_state.probeRollbackTier = -1;
+                g_state.probeTimer = 0.0f;
+                g_state.probeBadTimer = 0.0f;
+                g_state.highTimer = 0.0f;
+                g_state.probeBackoff = backoff;
+                g_state.cooldown = g_cfg.cooldownSeconds;
+                ResetFrameStats(frameMs);
+                return;
+            }
+
             std::ostringstream ss;
             ss << "probe accepted tier=" << g_state.currentTier
                << " fps=" << std::fixed << std::setprecision(1) << g_state.fps
@@ -718,16 +748,27 @@ void UpdateGovernor(float dt)
     }
 
     // Downshift swiftly but with proof over time. Repeat downshifts use a shorter hold.
+    // If the lowest allowed tier is already active, there is nowhere further down to go,
+    // so keep the downshift timer disabled instead of showing/counting useless credit.
+    const bool canDownshift = g_state.currentTier < g_cfg.maxTier;
     if (overBudget)
     {
+        g_state.highTimer = std::max(0.0f, g_state.highTimer - dt * 2.0f);
+        g_state.stableCreditDrainRate = 2.0f;
+
+        if (!canDownshift)
+        {
+            g_state.lowTimer = 0.0f;
+            g_state.autoState = "lowest-tier-over-budget";
+            return;
+        }
+
         g_state.lowTimer += dt;
         // Do not hard-reset the upshift stability credit on every small over-budget blip.
         // A real fight/load spike will drain it quickly; one bad frame will not erase 10s of stability.
-        g_state.highTimer = std::max(0.0f, g_state.highTimer - dt * 2.0f);
-        g_state.stableCreditDrainRate = 2.0f;
         const float required = g_state.hadDownshiftSeries ? g_cfg.downRepeatSeconds : g_cfg.downSeconds;
         g_state.autoState = g_state.hadDownshiftSeries ? "repeat-over-budget" : "over-budget";
-        if (g_state.lowTimer >= required && g_state.currentTier < g_cfg.maxTier)
+        if (g_state.lowTimer >= required)
         {
             std::ostringstream reason;
             reason << (g_state.hadDownshiftSeries ? "repeat-downshift-frame-time" : "downshift-frame-time")

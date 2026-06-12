@@ -30,7 +30,7 @@ struct ExtraGearConfig
     std::array<int, kStoredTierSlots> value{ 0, 0, 0, 0, 0 };
 };
 
-constexpr size_t kExtraGearSettingCount = 17;
+constexpr size_t kExtraGearSettingCount = 18;
 constexpr int kGovernorTierCount = 4;
 constexpr int kMaxGovernorTier = kGovernorTierCount - 1;
 
@@ -69,7 +69,6 @@ struct Config
     float upProbeSeconds = 4.5f;              // time to validate an upshift probe
     float upProbeBackoffSeconds = 35.0f;      // wait after failed probe
     float cooldownSeconds = 0.70f;            // small apply spacing after downshifts
-    float emaAlpha = 0.10f;
     float emergencySeconds = 0.5f;
     bool nexusLoadingGuardEnabled = true;     // NexusLinkData::IsGameplay loading detection. Legacy 60 FPS fallback removed in v82.
     float postLoadingGraceSeconds = 2.5f;
@@ -80,7 +79,6 @@ struct Config
     bool startupProfileApplyEnabled = true;   // v30: one-time sync after startup so GW2 and governor begin from the same tier
     float startupProfileApplyDelaySeconds = 2.0f;
     int governorPreset = 1;                    // 0=Swift, 1=Balanced, 2=Calm
-    bool frameTimeGovernor = true;             // v24: DRS-style frame-time gearbox instead of raw FPS switching
     float frameFastAlpha = 0.28f;              // FPS Drop Reaction Smoothing, stored as 0.28 = 28%
     float frameSlowAlpha = 0.055f;             // FPS Recovery Smoothing, stored as 0.055 = 5.5%
     float probeWarmupSeconds = 1.1f;           // ignore immediate apply/rebuild turbulence during an upshift probe
@@ -170,6 +168,7 @@ static const std::array<ExtraGearDef, kExtraGearSettingCount> kExtraGearDefs = {
     { "effectLod", "Effect LOD", ExtraGearKind::BoolFlag, 0, 1, 4, kOffOnNames, 2, false },
     { "highResCharacter", "High-Res Character Textures", ExtraGearKind::BoolFlag, 0, 1, 5, kOffOnNames, 2, false },
     { "screenSpaceShadows", "Screen Space Shadows", ExtraGearKind::BoolFlag, 0, 1, 22, kOffOnNames, 2, false },
+    { "ambientOcclusion", "Ambient Occlusion", ExtraGearKind::BoolFlag, 0, 1, 9, kOffOnNames, 2, false },
     { "hideAllyEffects", "Hide Ally Visual Effects candidate", ExtraGearKind::EnumSetting, 0, 4, -1, kHideAllyCandidateNames, 5, true, true },
 } };
 
@@ -297,7 +296,8 @@ void InitExtraGearDefaults()
     setRow(13, true,  { 1, 1, 1, 1, 1 }); // Effect LOD.
     setRow(14, true,  { 1, 1, 1, 0, 0 }); // High-res character textures.
     setRow(15, true,  { 1, 1, 0, 0, 0 }); // Screen-space shadows.
-    setRow(16, false, { 4, 3, 1, 0, 0 }); // Hide Ally Effects candidate: opt-in only.
+    setRow(16, true,  { 1, 1, 0, 0, 0 }); // Ambient Occlusion.
+    setRow(17, false, { 4, 3, 1, 0, 0 }); // Hide Ally Effects candidate: opt-in only.
 }
 void ApplyV44FourTierDefaults()
 {
@@ -364,7 +364,6 @@ struct State
     float startupProfileApplyTimer = 0.0f;
     bool startupProfileApplyDone = false;
     bool startupProfileApplyWaiting = false;
-    bool startupProfileApplySeenGameplay = false;
     std::string autoState = "idle";
     int currentTier = 0;
     std::atomic<int> observedLimit{-1};
@@ -405,81 +404,311 @@ struct State
     // settings object or the unsafe vtable+0xC8 refresh path.
 } g_state;
 
-void SaveConfig()
+
+std::string TrimCopy(std::string s)
 {
+    auto notSpace = [](unsigned char ch) { return !std::isspace(ch); };
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), notSpace));
+    s.erase(std::find_if(s.rbegin(), s.rend(), notSpace).base(), s.end());
+    return s;
+}
+
+bool ReadTextFile(const std::filesystem::path& path, std::string& out)
+{
+    out.clear();
     try
     {
-        std::ofstream out(g_configPath, std::ios::binary | std::ios::trunc);
-        out << "configVersion=83\n";
-        out << "windowVisible=" << (g_cfg.windowVisible ? 1 : 0) << "\n";
-        out << "tierOverlayVisible=" << (g_cfg.tierOverlayVisible ? 1 : 0) << "\n";
-        out << "tierOverlayPosValid=" << (g_cfg.tierOverlayPosValid ? 1 : 0) << "\n";
-        out << "tierOverlayPosX=" << g_cfg.tierOverlayPosX << "\n";
-        out << "tierOverlayPosY=" << g_cfg.tierOverlayPosY << "\n";
-        out << "controllerEnabled=" << (g_cfg.controllerEnabled ? 1 : 0) << "\n";
-        out << "tracerEnabled=" << (g_cfg.tracerEnabled ? 1 : 0) << "\n";
-        out << "liveWritesEnabled=" << (g_cfg.liveWritesEnabled ? 1 : 0) << "\n";
-        out << "stagedApplyEnabled=" << (g_cfg.stagedApplyEnabled ? 1 : 0) << "\n";
-        out << "stagedApplyDelayMs=" << g_cfg.stagedApplyDelayMs << "\n";
-        out << "sameValueBounceEnabled=" << (g_cfg.sameValueBounceEnabled ? 1 : 0) << "\n";
-        out << "stagedRecoverFromLowest=" << (g_cfg.stagedRecoverFromLowest ? 1 : 0) << "\n";
-        out << "controlLimitLive=" << (g_cfg.controlLimitLive ? 1 : 0) << "\n";
-        out << "controlQualityLive=" << (g_cfg.controlQualityLive ? 1 : 0) << "\n";
-        out << "manualLimitValue=" << g_cfg.manualLimitValue << "\n";
-        out << "manualQualityValue=" << g_cfg.manualQualityValue << "\n";
-        out << "targetFps=" << g_cfg.targetFps << "\n";
-        out << "minFps=" << g_cfg.minFps << "\n";
-        out << "downMarginPercent=" << g_cfg.downMarginPercent << "\n";
-        out << "upMarginPercent=" << g_cfg.upMarginPercent << "\n";
-        // Legacy absolute-FPS margin keys for easier comparison with older configs.
-        out << "downDelta=" << (g_cfg.targetFps * g_cfg.downMarginPercent * 0.01f) << "\n";
-        out << "upDelta=" << (g_cfg.targetFps * g_cfg.upMarginPercent * 0.01f) << "\n";
-        out << "downSeconds=" << g_cfg.downSeconds << "\n";
-        out << "downRepeatSeconds=" << g_cfg.downRepeatSeconds << "\n";
-        out << "upSeconds=" << g_cfg.upSeconds << "\n";
-        out << "upProbeSeconds=" << g_cfg.upProbeSeconds << "\n";
-        out << "upProbeBackoffSeconds=" << g_cfg.upProbeBackoffSeconds << "\n";
-        out << "cooldownSeconds=" << g_cfg.cooldownSeconds << "\n";
-        out << "emergencySeconds=" << g_cfg.emergencySeconds << "\n";
-        out << "nexusLoadingGuardEnabled=" << (g_cfg.nexusLoadingGuardEnabled ? 1 : 0) << "\n";
-        out << "postLoadingGraceSeconds=" << g_cfg.postLoadingGraceSeconds << "\n";
-        out << "emaAlpha=" << g_cfg.emaAlpha << "\n";
-        out << "minTier=" << g_cfg.minTier << "\n";
-        out << "maxTier=" << g_cfg.maxTier << "\n";
-        out << "startTier=" << g_cfg.startTier << "\n";
-        out << "autoChangeLogEnabled=" << (g_cfg.autoChangeLogEnabled ? 1 : 0) << "\n";
-        out << "startupProfileApplyEnabled=" << (g_cfg.startupProfileApplyEnabled ? 1 : 0) << "\n";
-        out << "startupProfileApplyDelaySeconds=" << g_cfg.startupProfileApplyDelaySeconds << "\n";
-        out << "governorPreset=" << g_cfg.governorPreset << "\n";
-        out << "frameTimeGovernor=" << (g_cfg.frameTimeGovernor ? 1 : 0) << "\n";
-        out << "frameFastAlpha=" << g_cfg.frameFastAlpha << "\n";
-        out << "frameSlowAlpha=" << g_cfg.frameSlowAlpha << "\n";
-        out << "probeWarmupSeconds=" << g_cfg.probeWarmupSeconds << "\n";
-        out << "probeRollbackSeconds=" << g_cfg.probeRollbackSeconds << "\n";
-        out << "maxProbeBackoffSeconds=" << g_cfg.maxProbeBackoffSeconds << "\n";
-        for (int t = 0; t < kGovernorTierCount; ++t)
+        std::ifstream in(path, std::ios::binary);
+        if (!in) { return false; }
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        out = ss.str();
+        return true;
+    }
+    catch (...) { return false; }
+}
+
+bool LooksLikeJsonDocument(const std::string& doc)
+{
+    for (unsigned char ch : doc)
+    {
+        if (std::isspace(ch)) { continue; }
+        return ch == '{';
+    }
+    return false;
+}
+
+std::string JsonEscape(const char* text)
+{
+    std::string out;
+    if (!text) { return out; }
+    for (const unsigned char ch : std::string(text))
+    {
+        switch (ch)
         {
-            out << "tierLimit" << t << "=" << g_cfg.tierLimitValues[static_cast<size_t>(t)] << "\n";
-            out << "tierQuality" << t << "=" << g_cfg.tierQualityValues[static_cast<size_t>(t)] << "\n";
-        }
-        out << "fullGearMatrixEnabled=" << (g_cfg.fullGearMatrixEnabled ? 1 : 0) << "\n";
-        out << "extraGearLiveApplyEnabled=" << (g_cfg.extraGearLiveApplyEnabled ? 1 : 0) << "\n";
-        out << "extraGearApplySpacingMs=" << g_cfg.extraGearApplySpacingMs << "\n";
-        out << "extraGearSkipUnchanged=" << (g_cfg.extraGearSkipUnchanged ? 1 : 0) << "\n";
-        // Legacy allGraphicsGovernorVxx markers are no longer written.
-        // configVersion above replaces the old migration-marker spam.
-        for (size_t n = 0; n < kExtraGearDefs.size(); ++n)
-        {
-            const auto& d = kExtraGearDefs[n];
-            const auto& c = g_cfg.extraGears[n];
-            out << "gear." << d.key << ".enabled=" << (c.enabled ? 1 : 0) << "\n";
-            for (int t = 0; t < kGovernorTierCount; ++t)
+        case '\\': out += "\\\\"; break;
+        case '"': out += "\\\""; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default:
+            if (ch < 32)
             {
-                out << "gear." << d.key << ".tier" << t << "=" << c.value[static_cast<size_t>(t)] << "\n";
+                char buf[8]{};
+                std::snprintf(buf, sizeof(buf), "\\u%04X", static_cast<unsigned>(ch));
+                out += buf;
             }
+            else { out.push_back(static_cast<char>(ch)); }
+            break;
         }
     }
-    catch (...) {}
+    return out;
+}
+
+void JsonComma(std::ostream& out, bool& first)
+{
+    if (!first) { out << ",\n"; }
+    first = false;
+}
+
+void JsonWriteBool(std::ostream& out, bool& first, const char* key, bool value)
+{
+    JsonComma(out, first);
+    out << "  \"" << JsonEscape(key) << "\": " << (value ? "true" : "false");
+}
+
+void JsonWriteInt(std::ostream& out, bool& first, const char* key, int value)
+{
+    JsonComma(out, first);
+    out << "  \"" << JsonEscape(key) << "\": " << value;
+}
+
+void JsonWriteFloat(std::ostream& out, bool& first, const char* key, float value)
+{
+    JsonComma(out, first);
+    out << "  \"" << JsonEscape(key) << "\": " << std::fixed << std::setprecision(4) << value << std::defaultfloat;
+}
+
+void JsonWriteIntArray(std::ostream& out, bool& first, const char* key, const std::array<int, kStoredTierSlots>& values, int count)
+{
+    JsonComma(out, first);
+    out << "  \"" << JsonEscape(key) << "\": [";
+    for (int i = 0; i < count; ++i)
+    {
+        if (i) { out << ", "; }
+        out << values[static_cast<size_t>(i)];
+    }
+    out << "]";
+}
+
+std::string JsonFindValueText(const std::string& doc, const char* key)
+{
+    if (!key || !*key) { return {}; }
+    const std::string needle = std::string("\"") + key + "\"";
+    size_t pos = 0;
+    while ((pos = doc.find(needle, pos)) != std::string::npos)
+    {
+        size_t p = pos + needle.size();
+        while (p < doc.size() && std::isspace(static_cast<unsigned char>(doc[p]))) { ++p; }
+        if (p >= doc.size() || doc[p] != ':') { pos += needle.size(); continue; }
+        ++p;
+        while (p < doc.size() && std::isspace(static_cast<unsigned char>(doc[p]))) { ++p; }
+        if (p >= doc.size()) { return {}; }
+
+        if (doc[p] == '"')
+        {
+            size_t q = p + 1;
+            bool escaped = false;
+            for (; q < doc.size(); ++q)
+            {
+                if (escaped) { escaped = false; continue; }
+                if (doc[q] == '\\') { escaped = true; continue; }
+                if (doc[q] == '"') { return doc.substr(p, q - p + 1); }
+            }
+            return {};
+        }
+        if (doc[p] == '[')
+        {
+            int depth = 0;
+            for (size_t q = p; q < doc.size(); ++q)
+            {
+                if (doc[q] == '[') { ++depth; }
+                else if (doc[q] == ']')
+                {
+                    --depth;
+                    if (depth == 0) { return doc.substr(p, q - p + 1); }
+                }
+            }
+            return {};
+        }
+
+        size_t q = p;
+        while (q < doc.size() && doc[q] != ',' && doc[q] != '}' && doc[q] != '\n' && doc[q] != '\r') { ++q; }
+        return TrimCopy(doc.substr(p, q - p));
+    }
+    return {};
+}
+
+bool JsonGetBool(const std::string& doc, const char* key, bool& out)
+{
+    std::string v = TrimCopy(JsonFindValueText(doc, key));
+    if (v.empty()) { return false; }
+    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (v == "true" || v == "1") { out = true; return true; }
+    if (v == "false" || v == "0") { out = false; return true; }
+    return false;
+}
+
+bool JsonGetInt(const std::string& doc, const char* key, int& out)
+{
+    std::string v = TrimCopy(JsonFindValueText(doc, key));
+    if (v.empty()) { return false; }
+    try { out = std::stoi(v); return true; } catch (...) { return false; }
+}
+
+bool JsonGetFloat(const std::string& doc, const char* key, float& out)
+{
+    std::string v = TrimCopy(JsonFindValueText(doc, key));
+    if (v.empty()) { return false; }
+    try { out = std::stof(v); return true; } catch (...) { return false; }
+}
+
+bool JsonGetIntArray(const std::string& doc, const char* key, std::array<int, kStoredTierSlots>& out, int count)
+{
+    std::string v = TrimCopy(JsonFindValueText(doc, key));
+    if (v.size() < 2 || v.front() != '[' || v.back() != ']') { return false; }
+    v = v.substr(1, v.size() - 2);
+    std::stringstream ss(v);
+    std::string item;
+    int idx = 0;
+    bool any = false;
+    while (std::getline(ss, item, ',') && idx < count)
+    {
+        item = TrimCopy(item);
+        if (item.empty()) { return false; }
+        try
+        {
+            out[static_cast<size_t>(idx)] = std::stoi(item);
+            any = true;
+            ++idx;
+        }
+        catch (...) { return false; }
+    }
+    return any;
+}
+
+void SaveConfig()
+{
+    const std::filesystem::path path(g_configPath);
+    std::filesystem::path tmpPath = path;
+    tmpPath += L".tmp";
+    std::filesystem::path bakPath = path;
+    bakPath += L".bak";
+
+    try
+    {
+        std::filesystem::create_directories(path.parent_path());
+        {
+            std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+            if (!out) { throw std::runtime_error("open failed"); }
+            bool first = true;
+            out << "{\n";
+            JsonWriteInt(out, first, "configVersion", 85);
+            JsonWriteBool(out, first, "windowVisible", g_cfg.windowVisible);
+            JsonWriteBool(out, first, "tierOverlayVisible", g_cfg.tierOverlayVisible);
+            JsonWriteBool(out, first, "tierOverlayPosValid", g_cfg.tierOverlayPosValid);
+            JsonWriteFloat(out, first, "tierOverlayPosX", g_cfg.tierOverlayPosX);
+            JsonWriteFloat(out, first, "tierOverlayPosY", g_cfg.tierOverlayPosY);
+            JsonWriteBool(out, first, "controllerEnabled", g_cfg.controllerEnabled);
+            JsonWriteBool(out, first, "tracerEnabled", g_cfg.tracerEnabled);
+            JsonWriteBool(out, first, "liveWritesEnabled", g_cfg.liveWritesEnabled);
+            JsonWriteBool(out, first, "stagedApplyEnabled", g_cfg.stagedApplyEnabled);
+            JsonWriteInt(out, first, "stagedApplyDelayMs", g_cfg.stagedApplyDelayMs);
+            JsonWriteBool(out, first, "sameValueBounceEnabled", g_cfg.sameValueBounceEnabled);
+            JsonWriteBool(out, first, "stagedRecoverFromLowest", g_cfg.stagedRecoverFromLowest);
+            JsonWriteBool(out, first, "controlLimitLive", g_cfg.controlLimitLive);
+            JsonWriteBool(out, first, "controlQualityLive", g_cfg.controlQualityLive);
+            JsonWriteInt(out, first, "manualLimitValue", g_cfg.manualLimitValue);
+            JsonWriteInt(out, first, "manualQualityValue", g_cfg.manualQualityValue);
+            JsonWriteFloat(out, first, "targetFps", g_cfg.targetFps);
+            JsonWriteFloat(out, first, "minFps", g_cfg.minFps);
+            JsonWriteFloat(out, first, "downMarginPercent", g_cfg.downMarginPercent);
+            JsonWriteFloat(out, first, "upMarginPercent", g_cfg.upMarginPercent);
+            JsonWriteFloat(out, first, "downDelta", g_cfg.targetFps * g_cfg.downMarginPercent * 0.01f);
+            JsonWriteFloat(out, first, "upDelta", g_cfg.targetFps * g_cfg.upMarginPercent * 0.01f);
+            JsonWriteFloat(out, first, "downSeconds", g_cfg.downSeconds);
+            JsonWriteFloat(out, first, "downRepeatSeconds", g_cfg.downRepeatSeconds);
+            JsonWriteFloat(out, first, "upSeconds", g_cfg.upSeconds);
+            JsonWriteFloat(out, first, "upProbeSeconds", g_cfg.upProbeSeconds);
+            JsonWriteFloat(out, first, "upProbeBackoffSeconds", g_cfg.upProbeBackoffSeconds);
+            JsonWriteFloat(out, first, "cooldownSeconds", g_cfg.cooldownSeconds);
+            JsonWriteFloat(out, first, "emergencySeconds", g_cfg.emergencySeconds);
+            JsonWriteBool(out, first, "nexusLoadingGuardEnabled", g_cfg.nexusLoadingGuardEnabled);
+            JsonWriteFloat(out, first, "postLoadingGraceSeconds", g_cfg.postLoadingGraceSeconds);
+            JsonWriteInt(out, first, "minTier", g_cfg.minTier);
+            JsonWriteInt(out, first, "maxTier", g_cfg.maxTier);
+            JsonWriteInt(out, first, "startTier", g_cfg.startTier);
+            JsonWriteBool(out, first, "autoChangeLogEnabled", g_cfg.autoChangeLogEnabled);
+            JsonWriteBool(out, first, "startupProfileApplyEnabled", g_cfg.startupProfileApplyEnabled);
+            JsonWriteFloat(out, first, "startupProfileApplyDelaySeconds", g_cfg.startupProfileApplyDelaySeconds);
+            JsonWriteInt(out, first, "governorPreset", g_cfg.governorPreset);
+            JsonWriteFloat(out, first, "frameFastAlpha", g_cfg.frameFastAlpha);
+            JsonWriteFloat(out, first, "frameSlowAlpha", g_cfg.frameSlowAlpha);
+            JsonWriteFloat(out, first, "probeWarmupSeconds", g_cfg.probeWarmupSeconds);
+            JsonWriteFloat(out, first, "probeRollbackSeconds", g_cfg.probeRollbackSeconds);
+            JsonWriteFloat(out, first, "maxProbeBackoffSeconds", g_cfg.maxProbeBackoffSeconds);
+            JsonWriteIntArray(out, first, "tierLimitValues", g_cfg.tierLimitValues, kGovernorTierCount);
+            JsonWriteIntArray(out, first, "tierQualityValues", g_cfg.tierQualityValues, kGovernorTierCount);
+            JsonWriteBool(out, first, "fullGearMatrixEnabled", g_cfg.fullGearMatrixEnabled);
+            JsonWriteBool(out, first, "extraGearLiveApplyEnabled", g_cfg.extraGearLiveApplyEnabled);
+            JsonWriteInt(out, first, "extraGearApplySpacingMs", g_cfg.extraGearApplySpacingMs);
+            JsonWriteBool(out, first, "extraGearSkipUnchanged", g_cfg.extraGearSkipUnchanged);
+            for (size_t n = 0; n < kExtraGearDefs.size(); ++n)
+            {
+                const auto& d = kExtraGearDefs[n];
+                const auto& c = g_cfg.extraGears[n];
+                std::string enabledKey = std::string("gear.") + d.key + ".enabled";
+                std::string tiersKey = std::string("gear.") + d.key + ".tiers";
+                JsonWriteBool(out, first, enabledKey.c_str(), c.enabled);
+                JsonWriteIntArray(out, first, tiersKey.c_str(), c.value, kGovernorTierCount);
+            }
+            out << "\n}\n";
+            out.flush();
+            if (!out) { throw std::runtime_error("write failed"); }
+        }
+
+        std::error_code ec;
+        std::filesystem::remove(bakPath, ec);
+        ec.clear();
+        if (std::filesystem::exists(path, ec))
+        {
+            std::filesystem::rename(path, bakPath, ec);
+            if (ec)
+            {
+                std::filesystem::remove(bakPath, ec);
+                ec.clear();
+                std::filesystem::rename(path, bakPath, ec);
+                if (ec) { throw std::runtime_error("backup rename failed"); }
+            }
+        }
+        ec.clear();
+        std::filesystem::rename(tmpPath, path, ec);
+        if (ec)
+        {
+            std::error_code restoreEc;
+            if (std::filesystem::exists(bakPath, restoreEc) && !std::filesystem::exists(path, restoreEc))
+            {
+                std::filesystem::rename(bakPath, path, restoreEc);
+            }
+            throw std::runtime_error("final rename failed");
+        }
+    }
+    catch (...)
+    {
+        std::error_code ec;
+        std::filesystem::remove(tmpPath, ec);
+        Log(LOGL_WARNING, "Failed to save Visual Governor JSON config.");
+    }
 }
 
 void LoadConfig()
@@ -515,115 +744,203 @@ void LoadConfig()
     float legacyUpDelta = 0.0f;
     try
     {
-        std::ifstream in(g_configPath, std::ios::binary);
-        std::string line;
-        while (std::getline(in, line))
+        const std::filesystem::path jsonPath(g_configPath);
+        const std::filesystem::path iniPath = jsonPath.parent_path() / L"config.ini";
+        std::string jsonDoc;
+        bool loadedJson = false;
+
+        if (ReadTextFile(jsonPath, jsonDoc) && LooksLikeJsonDocument(jsonDoc))
         {
-            auto eq = line.find('=');
-            if (eq == std::string::npos) { continue; }
-            std::string k = line.substr(0, eq);
-            std::string v = line.substr(eq + 1);
-            auto f = [&]() { return std::stof(v); };
-            auto i = [&]() { return std::stoi(v); };
-            if (k == "configVersion") { configVersion = i(); }
-            else if (k == "windowVisible") { g_cfg.windowVisible = i() != 0; }
-            else if (k == "tierOverlayVisible") { g_cfg.tierOverlayVisible = i() != 0; }
-            else if (k == "tierOverlayPosValid") { g_cfg.tierOverlayPosValid = i() != 0; }
-            else if (k == "tierOverlayPosX") { g_cfg.tierOverlayPosX = f(); }
-            else if (k == "tierOverlayPosY") { g_cfg.tierOverlayPosY = f(); }
-            else if (k == "controllerEnabled") { g_cfg.controllerEnabled = i() != 0; }
-            else if (k == "tracerEnabled") { g_cfg.tracerEnabled = i() != 0; }
-            else if (k == "liveWritesEnabled") { g_cfg.liveWritesEnabled = i() != 0; }
-            else if (k == "stagedApplyEnabled") { g_cfg.stagedApplyEnabled = i() != 0; }
-            else if (k == "stagedApplyDelayMs") { g_cfg.stagedApplyDelayMs = i(); }
-            else if (k == "sameValueBounceEnabled") { g_cfg.sameValueBounceEnabled = i() != 0; }
-            else if (k == "stagedRecoverFromLowest") { g_cfg.stagedRecoverFromLowest = i() != 0; }
-            else if (k == "controlLimitLive") { g_cfg.controlLimitLive = i() != 0; }
-            else if (k == "controlQualityLive") { g_cfg.controlQualityLive = i() != 0; }
-            else if (k == "manualLimitValue") { g_cfg.manualLimitValue = i(); }
-            else if (k == "manualQualityValue") { g_cfg.manualQualityValue = i(); }
-            else if (k == "targetFps") { g_cfg.targetFps = f(); }
-            else if (k == "minFps") { g_cfg.minFps = f(); }
-            else if (k == "downMarginPercent") { g_cfg.downMarginPercent = f(); sawDownMarginPercent = true; }
-            else if (k == "upMarginPercent") { g_cfg.upMarginPercent = f(); sawUpMarginPercent = true; }
-            else if (k == "downDelta") { legacyDownDelta = f(); sawLegacyDownDelta = true; }
-            else if (k == "upDelta") { legacyUpDelta = f(); sawLegacyUpDelta = true; }
-            else if (k == "downSeconds") { g_cfg.downSeconds = f(); }
-            else if (k == "downRepeatSeconds") { g_cfg.downRepeatSeconds = f(); }
-            else if (k == "upSeconds") { g_cfg.upSeconds = f(); }
-            else if (k == "upProbeSeconds") { g_cfg.upProbeSeconds = f(); }
-            else if (k == "upProbeBackoffSeconds") { g_cfg.upProbeBackoffSeconds = f(); }
-            else if (k == "cooldownSeconds") { g_cfg.cooldownSeconds = f(); }
-            else if (k == "emergencySeconds") { g_cfg.emergencySeconds = f(); }
-            else if (k == "nexusLoadingGuardEnabled") { g_cfg.nexusLoadingGuardEnabled = i() != 0; }
-            // v82: legacy loadingGuardMode/loadingFpsCenter/loadingFpsWindow/loadingDetectSeconds keys are ignored.
-            else if (k == "postLoadingGraceSeconds") { g_cfg.postLoadingGraceSeconds = f(); }
-            else if (k == "emaAlpha") { g_cfg.emaAlpha = f(); }
-            else if (k == "minTier") { g_cfg.minTier = i(); }
-            else if (k == "maxTier") { g_cfg.maxTier = i(); }
-            else if (k == "startTier") { g_cfg.startTier = i(); }
-            else if (k == "autoChangeLogEnabled") { g_cfg.autoChangeLogEnabled = i() != 0; }
-            else if (k == "startupProfileApplyEnabled") { g_cfg.startupProfileApplyEnabled = i() != 0; }
-            else if (k == "startupProfileApplyDelaySeconds") { g_cfg.startupProfileApplyDelaySeconds = f(); }
-            else if (k == "governorPreset") { g_cfg.governorPreset = i(); }
-            else if (k == "frameTimeGovernor") { g_cfg.frameTimeGovernor = i() != 0; }
-            else if (k == "frameFastAlpha") { g_cfg.frameFastAlpha = f(); }
-            else if (k == "frameSlowAlpha") { g_cfg.frameSlowAlpha = f(); }
-            else if (k == "probeWarmupSeconds") { g_cfg.probeWarmupSeconds = f(); }
-            else if (k == "probeRollbackSeconds") { g_cfg.probeRollbackSeconds = f(); }
-            else if (k == "maxProbeBackoffSeconds") { g_cfg.maxProbeBackoffSeconds = f(); }
-            else if (k.rfind("tierLimit", 0) == 0)
+            auto jb = [&](const char* key, bool& target) { bool v = false; if (JsonGetBool(jsonDoc, key, v)) { target = v; return true; } return false; };
+            auto ji = [&](const char* key, int& target) { int v = 0; if (JsonGetInt(jsonDoc, key, v)) { target = v; return true; } return false; };
+            auto jf = [&](const char* key, float& target) { float v = 0.0f; if (JsonGetFloat(jsonDoc, key, v)) { target = v; return true; } return false; };
+
+            ji("configVersion", configVersion);
+            jb("windowVisible", g_cfg.windowVisible);
+            jb("tierOverlayVisible", g_cfg.tierOverlayVisible);
+            jb("tierOverlayPosValid", g_cfg.tierOverlayPosValid);
+            jf("tierOverlayPosX", g_cfg.tierOverlayPosX);
+            jf("tierOverlayPosY", g_cfg.tierOverlayPosY);
+            jb("controllerEnabled", g_cfg.controllerEnabled);
+            jb("tracerEnabled", g_cfg.tracerEnabled);
+            jb("liveWritesEnabled", g_cfg.liveWritesEnabled);
+            jb("stagedApplyEnabled", g_cfg.stagedApplyEnabled);
+            ji("stagedApplyDelayMs", g_cfg.stagedApplyDelayMs);
+            jb("sameValueBounceEnabled", g_cfg.sameValueBounceEnabled);
+            jb("stagedRecoverFromLowest", g_cfg.stagedRecoverFromLowest);
+            jb("controlLimitLive", g_cfg.controlLimitLive);
+            jb("controlQualityLive", g_cfg.controlQualityLive);
+            ji("manualLimitValue", g_cfg.manualLimitValue);
+            ji("manualQualityValue", g_cfg.manualQualityValue);
+            jf("targetFps", g_cfg.targetFps);
+            jf("minFps", g_cfg.minFps);
+            if (jf("downMarginPercent", g_cfg.downMarginPercent)) { sawDownMarginPercent = true; }
+            if (jf("upMarginPercent", g_cfg.upMarginPercent)) { sawUpMarginPercent = true; }
+            if (jf("downDelta", legacyDownDelta)) { sawLegacyDownDelta = true; }
+            if (jf("upDelta", legacyUpDelta)) { sawLegacyUpDelta = true; }
+            jf("downSeconds", g_cfg.downSeconds);
+            jf("downRepeatSeconds", g_cfg.downRepeatSeconds);
+            jf("upSeconds", g_cfg.upSeconds);
+            jf("upProbeSeconds", g_cfg.upProbeSeconds);
+            jf("upProbeBackoffSeconds", g_cfg.upProbeBackoffSeconds);
+            jf("cooldownSeconds", g_cfg.cooldownSeconds);
+            jf("emergencySeconds", g_cfg.emergencySeconds);
+            jb("nexusLoadingGuardEnabled", g_cfg.nexusLoadingGuardEnabled);
+            jf("postLoadingGraceSeconds", g_cfg.postLoadingGraceSeconds);
+            ji("minTier", g_cfg.minTier);
+            ji("maxTier", g_cfg.maxTier);
+            ji("startTier", g_cfg.startTier);
+            jb("autoChangeLogEnabled", g_cfg.autoChangeLogEnabled);
+            jb("startupProfileApplyEnabled", g_cfg.startupProfileApplyEnabled);
+            jf("startupProfileApplyDelaySeconds", g_cfg.startupProfileApplyDelaySeconds);
+            ji("governorPreset", g_cfg.governorPreset);
+            jf("frameFastAlpha", g_cfg.frameFastAlpha);
+            jf("frameSlowAlpha", g_cfg.frameSlowAlpha);
+            jf("probeWarmupSeconds", g_cfg.probeWarmupSeconds);
+            jf("probeRollbackSeconds", g_cfg.probeRollbackSeconds);
+            jf("maxProbeBackoffSeconds", g_cfg.maxProbeBackoffSeconds);
+            JsonGetIntArray(jsonDoc, "tierLimitValues", g_cfg.tierLimitValues, kGovernorTierCount);
+            JsonGetIntArray(jsonDoc, "tierQualityValues", g_cfg.tierQualityValues, kGovernorTierCount);
+            jb("fullGearMatrixEnabled", g_cfg.fullGearMatrixEnabled);
+            jb("extraGearLiveApplyEnabled", g_cfg.extraGearLiveApplyEnabled);
+            ji("extraGearApplySpacingMs", g_cfg.extraGearApplySpacingMs);
+            jb("extraGearSkipUnchanged", g_cfg.extraGearSkipUnchanged);
+
+            for (size_t n = 0; n < kExtraGearDefs.size(); ++n)
             {
-                int idx = std::stoi(k.substr(9));
-                if (idx >= 0 && idx < 5) { g_cfg.tierLimitValues[static_cast<size_t>(idx)] = i(); }
-            }
-            else if (k.rfind("tierQuality", 0) == 0)
-            {
-                int idx = std::stoi(k.substr(11));
-                if (idx >= 0 && idx < 5) { g_cfg.tierQualityValues[static_cast<size_t>(idx)] = i(); }
-            }
-            else if (k == "fullGearMatrixEnabled") { g_cfg.fullGearMatrixEnabled = i() != 0; }
-            else if (k == "extraGearLiveApplyEnabled") { g_cfg.extraGearLiveApplyEnabled = i() != 0; }
-            else if (k == "extraGearApplySpacingMs") { g_cfg.extraGearApplySpacingMs = i(); }
-            else if (k == "extraGearSkipUnchanged") { g_cfg.extraGearSkipUnchanged = i() != 0; }
-            else if (k == "allGraphicsGovernorV41") { sawAllGraphicsGovernorV41 = i() != 0; }
-            else if (k == "allGraphicsGovernorV42") { sawAllGraphicsGovernorV42 = i() != 0; }
-            else if (k == "allGraphicsGovernorV43") { sawAllGraphicsGovernorV43 = i() != 0; }
-            else if (k == "allGraphicsGovernorV44") { sawAllGraphicsGovernorV44 = i() != 0; }
-            else if (k == "allGraphicsGovernorV45") { sawAllGraphicsGovernorV45 = i() != 0; }
-            else if (k == "allGraphicsGovernorV46") { /* v46 marker */ }
-            else if (k == "allGraphicsGovernorV47") { sawAllGraphicsGovernorV47 = i() != 0; }
-            else if (k == "allGraphicsGovernorV48") { sawAllGraphicsGovernorV48 = i() != 0; }
-            else if (k == "allGraphicsGovernorV50") { sawAllGraphicsGovernorV50 = i() != 0; }
-            else if (k == "allGraphicsGovernorV51") { sawAllGraphicsGovernorV51 = i() != 0; }
-            else if (k == "allGraphicsGovernorV52") { sawAllGraphicsGovernorV52 = i() != 0; }
-            else if (k == "allGraphicsGovernorV56") { sawAllGraphicsGovernorV56 = i() != 0; }
-            else if (k == "allGraphicsGovernorV57") { sawAllGraphicsGovernorV57 = i() != 0; }
-            else if (k == "allGraphicsGovernorV58") { sawAllGraphicsGovernorV58 = i() != 0; }
-            else if (k == "allGraphicsGovernorV59") { sawAllGraphicsGovernorV59 = i() != 0; }
-            else if (k == "allGraphicsGovernorV60") { sawAllGraphicsGovernorV60 = i() != 0; }
-            else if (k == "allGraphicsGovernorV63") { sawAllGraphicsGovernorV63 = i() != 0; }
-            else if (k == "allGraphicsGovernorV66") { sawAllGraphicsGovernorV66 = i() != 0; }
-            else if (k == "allGraphicsGovernorV40") { sawAllGraphicsGovernorV40 = i() != 0; }
-            else if (k == "allGraphicsGovernorV39") { sawAllGraphicsGovernorV39 = i() != 0; }
-            else if (k == "allGraphicsGovernorV37") { sawAllGraphicsGovernorV37 = i() != 0; }
-            else if (k == "allGraphicsGovernorV36") { sawAllGraphicsGovernorV36 = i() != 0; }
-            else if (k == "allGraphicsGovernorV35") { sawAllGraphicsGovernorV35 = i() != 0; }
-            else if (k == "allGraphicsGovernorV34") { /* v34 marker is intentionally not enough for v35 crash-fix migration. */ }
-            else if (k.rfind("gear.", 0) == 0)
-            {
-                for (size_t n = 0; n < kExtraGearDefs.size(); ++n)
+                const auto& d = kExtraGearDefs[n];
+                std::string enabledKey = std::string("gear.") + d.key + ".enabled";
+                std::string tiersKey = std::string("gear.") + d.key + ".tiers";
+                jb(enabledKey.c_str(), g_cfg.extraGears[n].enabled);
+                JsonGetIntArray(jsonDoc, tiersKey.c_str(), g_cfg.extraGears[n].value, kGovernorTierCount);
+
+                // Also accept the old flat tier keys if somebody hand-converted an INI.
+                for (int t = 0; t < kGovernorTierCount; ++t)
                 {
-                    std::string prefix = std::string("gear.") + kExtraGearDefs[n].key + ".";
-                    if (k.rfind(prefix, 0) != 0) { continue; }
-                    std::string leaf = k.substr(prefix.size());
-                    if (leaf == "enabled") { g_cfg.extraGears[n].enabled = i() != 0; }
-                    else if (leaf.rfind("tier", 0) == 0)
+                    std::string tierKey = std::string("gear.") + d.key + ".tier" + std::to_string(t);
+                    int v = 0;
+                    if (JsonGetInt(jsonDoc, tierKey.c_str(), v)) { g_cfg.extraGears[n].value[static_cast<size_t>(t)] = v; }
+                }
+            }
+
+            loadedJson = true;
+        }
+
+        if (!loadedJson)
+        {
+            std::filesystem::path pathToRead = iniPath;
+            if (!std::filesystem::exists(pathToRead) && std::filesystem::exists(jsonPath)) { pathToRead = jsonPath; }
+
+            std::ifstream in(pathToRead, std::ios::binary);
+            std::string line;
+            while (std::getline(in, line))
+            {
+                auto eq = line.find('=');
+                if (eq == std::string::npos) { continue; }
+                std::string k = line.substr(0, eq);
+                std::string v = line.substr(eq + 1);
+                auto f = [&]() { return std::stof(v); };
+                auto i = [&]() { return std::stoi(v); };
+                if (k == "configVersion") { configVersion = i(); }
+                else if (k == "windowVisible") { g_cfg.windowVisible = i() != 0; }
+                else if (k == "tierOverlayVisible") { g_cfg.tierOverlayVisible = i() != 0; }
+                else if (k == "tierOverlayPosValid") { g_cfg.tierOverlayPosValid = i() != 0; }
+                else if (k == "tierOverlayPosX") { g_cfg.tierOverlayPosX = f(); }
+                else if (k == "tierOverlayPosY") { g_cfg.tierOverlayPosY = f(); }
+                else if (k == "controllerEnabled") { g_cfg.controllerEnabled = i() != 0; }
+                else if (k == "tracerEnabled") { g_cfg.tracerEnabled = i() != 0; }
+                else if (k == "liveWritesEnabled") { g_cfg.liveWritesEnabled = i() != 0; }
+                else if (k == "stagedApplyEnabled") { g_cfg.stagedApplyEnabled = i() != 0; }
+                else if (k == "stagedApplyDelayMs") { g_cfg.stagedApplyDelayMs = i(); }
+                else if (k == "sameValueBounceEnabled") { g_cfg.sameValueBounceEnabled = i() != 0; }
+                else if (k == "stagedRecoverFromLowest") { g_cfg.stagedRecoverFromLowest = i() != 0; }
+                else if (k == "controlLimitLive") { g_cfg.controlLimitLive = i() != 0; }
+                else if (k == "controlQualityLive") { g_cfg.controlQualityLive = i() != 0; }
+                else if (k == "manualLimitValue") { g_cfg.manualLimitValue = i(); }
+                else if (k == "manualQualityValue") { g_cfg.manualQualityValue = i(); }
+                else if (k == "targetFps") { g_cfg.targetFps = f(); }
+                else if (k == "minFps") { g_cfg.minFps = f(); }
+                else if (k == "downMarginPercent") { g_cfg.downMarginPercent = f(); sawDownMarginPercent = true; }
+                else if (k == "upMarginPercent") { g_cfg.upMarginPercent = f(); sawUpMarginPercent = true; }
+                else if (k == "downDelta") { legacyDownDelta = f(); sawLegacyDownDelta = true; }
+                else if (k == "upDelta") { legacyUpDelta = f(); sawLegacyUpDelta = true; }
+                else if (k == "downSeconds") { g_cfg.downSeconds = f(); }
+                else if (k == "downRepeatSeconds") { g_cfg.downRepeatSeconds = f(); }
+                else if (k == "upSeconds") { g_cfg.upSeconds = f(); }
+                else if (k == "upProbeSeconds") { g_cfg.upProbeSeconds = f(); }
+                else if (k == "upProbeBackoffSeconds") { g_cfg.upProbeBackoffSeconds = f(); }
+                else if (k == "cooldownSeconds") { g_cfg.cooldownSeconds = f(); }
+                else if (k == "emergencySeconds") { g_cfg.emergencySeconds = f(); }
+                else if (k == "nexusLoadingGuardEnabled") { g_cfg.nexusLoadingGuardEnabled = i() != 0; }
+                // v82: legacy loadingGuardMode/loadingFpsCenter/loadingFpsWindow/loadingDetectSeconds keys are ignored.
+                else if (k == "postLoadingGraceSeconds") { g_cfg.postLoadingGraceSeconds = f(); }
+                else if (k == "emaAlpha") { /* legacy field ignored */ }
+                else if (k == "minTier") { g_cfg.minTier = i(); }
+                else if (k == "maxTier") { g_cfg.maxTier = i(); }
+                else if (k == "startTier") { g_cfg.startTier = i(); }
+                else if (k == "autoChangeLogEnabled") { g_cfg.autoChangeLogEnabled = i() != 0; }
+                else if (k == "startupProfileApplyEnabled") { g_cfg.startupProfileApplyEnabled = i() != 0; }
+                else if (k == "startupProfileApplyDelaySeconds") { g_cfg.startupProfileApplyDelaySeconds = f(); }
+                else if (k == "governorPreset") { g_cfg.governorPreset = i(); }
+                else if (k == "frameTimeGovernor") { /* legacy field ignored */ }
+                else if (k == "frameFastAlpha") { g_cfg.frameFastAlpha = f(); }
+                else if (k == "frameSlowAlpha") { g_cfg.frameSlowAlpha = f(); }
+                else if (k == "probeWarmupSeconds") { g_cfg.probeWarmupSeconds = f(); }
+                else if (k == "probeRollbackSeconds") { g_cfg.probeRollbackSeconds = f(); }
+                else if (k == "maxProbeBackoffSeconds") { g_cfg.maxProbeBackoffSeconds = f(); }
+                else if (k.rfind("tierLimit", 0) == 0)
+                {
+                    int idx = std::stoi(k.substr(9));
+                    if (idx >= 0 && idx < 5) { g_cfg.tierLimitValues[static_cast<size_t>(idx)] = i(); }
+                }
+                else if (k.rfind("tierQuality", 0) == 0)
+                {
+                    int idx = std::stoi(k.substr(11));
+                    if (idx >= 0 && idx < 5) { g_cfg.tierQualityValues[static_cast<size_t>(idx)] = i(); }
+                }
+                else if (k == "fullGearMatrixEnabled") { g_cfg.fullGearMatrixEnabled = i() != 0; }
+                else if (k == "extraGearLiveApplyEnabled") { g_cfg.extraGearLiveApplyEnabled = i() != 0; }
+                else if (k == "extraGearApplySpacingMs") { g_cfg.extraGearApplySpacingMs = i(); }
+                else if (k == "extraGearSkipUnchanged") { g_cfg.extraGearSkipUnchanged = i() != 0; }
+                else if (k == "allGraphicsGovernorV41") { sawAllGraphicsGovernorV41 = i() != 0; }
+                else if (k == "allGraphicsGovernorV42") { sawAllGraphicsGovernorV42 = i() != 0; }
+                else if (k == "allGraphicsGovernorV43") { sawAllGraphicsGovernorV43 = i() != 0; }
+                else if (k == "allGraphicsGovernorV44") { sawAllGraphicsGovernorV44 = i() != 0; }
+                else if (k == "allGraphicsGovernorV45") { sawAllGraphicsGovernorV45 = i() != 0; }
+                else if (k == "allGraphicsGovernorV46") { /* v46 marker */ }
+                else if (k == "allGraphicsGovernorV47") { sawAllGraphicsGovernorV47 = i() != 0; }
+                else if (k == "allGraphicsGovernorV48") { sawAllGraphicsGovernorV48 = i() != 0; }
+                else if (k == "allGraphicsGovernorV50") { sawAllGraphicsGovernorV50 = i() != 0; }
+                else if (k == "allGraphicsGovernorV51") { sawAllGraphicsGovernorV51 = i() != 0; }
+                else if (k == "allGraphicsGovernorV52") { sawAllGraphicsGovernorV52 = i() != 0; }
+                else if (k == "allGraphicsGovernorV56") { sawAllGraphicsGovernorV56 = i() != 0; }
+                else if (k == "allGraphicsGovernorV57") { sawAllGraphicsGovernorV57 = i() != 0; }
+                else if (k == "allGraphicsGovernorV58") { sawAllGraphicsGovernorV58 = i() != 0; }
+                else if (k == "allGraphicsGovernorV59") { sawAllGraphicsGovernorV59 = i() != 0; }
+                else if (k == "allGraphicsGovernorV60") { sawAllGraphicsGovernorV60 = i() != 0; }
+                else if (k == "allGraphicsGovernorV63") { sawAllGraphicsGovernorV63 = i() != 0; }
+                else if (k == "allGraphicsGovernorV66") { sawAllGraphicsGovernorV66 = i() != 0; }
+                else if (k == "allGraphicsGovernorV40") { sawAllGraphicsGovernorV40 = i() != 0; }
+                else if (k == "allGraphicsGovernorV39") { sawAllGraphicsGovernorV39 = i() != 0; }
+                else if (k == "allGraphicsGovernorV37") { sawAllGraphicsGovernorV37 = i() != 0; }
+                else if (k == "allGraphicsGovernorV36") { sawAllGraphicsGovernorV36 = i() != 0; }
+                else if (k == "allGraphicsGovernorV35") { sawAllGraphicsGovernorV35 = i() != 0; }
+                else if (k == "allGraphicsGovernorV34") { /* v34 marker is intentionally not enough for v35 crash-fix migration. */ }
+                else if (k.rfind("gear.", 0) == 0)
+                {
+                    for (size_t n = 0; n < kExtraGearDefs.size(); ++n)
                     {
-                        int idx = std::stoi(leaf.substr(4));
-                        if (idx >= 0 && idx < 5) { g_cfg.extraGears[n].value[static_cast<size_t>(idx)] = i(); }
+                        std::string prefix = std::string("gear.") + kExtraGearDefs[n].key + ".";
+                        if (k.rfind(prefix, 0) != 0) { continue; }
+                        std::string leaf = k.substr(prefix.size());
+                        if (leaf == "enabled") { g_cfg.extraGears[n].enabled = i() != 0; }
+                        else if (leaf.rfind("tier", 0) == 0)
+                        {
+                            int idx = std::stoi(leaf.substr(4));
+                            if (idx >= 0 && idx < 5) { g_cfg.extraGears[n].value[static_cast<size_t>(idx)] = i(); }
+                        }
+                        break;
                     }
-                    break;
                 }
             }
         }
@@ -683,7 +1000,14 @@ void LoadConfig()
     // explicitly re-enable it after v41 if they want to test that row.
     if (!sawAllGraphicsGovernorV41)
     {
-        if (kExtraGearDefs.size() > 16) { g_cfg.extraGears[16].enabled = false; }
+        for (size_t n = 0; n < kExtraGearDefs.size(); ++n)
+        {
+            if (std::strcmp(kExtraGearDefs[n].key, "hideAllyEffects") == 0)
+            {
+                g_cfg.extraGears[n].enabled = false;
+                break;
+            }
+        }
     }
 
     // v43 migration: configs written by v35-v42 used Shadows=custom as the
@@ -827,7 +1151,7 @@ void LoadConfig()
     g_cfg.upMarginPercent = std::clamp(g_cfg.upMarginPercent, 0.0f, 80.0f);
     g_cfg.frameFastAlpha = std::clamp(g_cfg.frameFastAlpha, 0.02f, 0.90f);
     g_cfg.frameSlowAlpha = std::clamp(g_cfg.frameSlowAlpha, 0.005f, 0.40f);
-    g_cfg.probeWarmupSeconds = std::clamp(g_cfg.probeWarmupSeconds, 0.0f, 5.0f);
+    g_cfg.probeWarmupSeconds = std::min(std::clamp(g_cfg.probeWarmupSeconds, 0.0f, 5.0f), std::max(0.0f, g_cfg.upProbeSeconds - 0.25f));
     g_cfg.probeRollbackSeconds = std::clamp(g_cfg.probeRollbackSeconds, 0.05f, 5.0f);
     g_cfg.maxProbeBackoffSeconds = std::clamp(g_cfg.maxProbeBackoffSeconds, 10.0f, 600.0f);
     g_cfg.tierOverlayPosX = std::clamp(g_cfg.tierOverlayPosX, -10000.0f, 10000.0f);

@@ -16,12 +16,14 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cctype>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -147,9 +149,9 @@ extern "C" __declspec(dllexport) AddonDefinition_t* GetAddonDef()
         AddonSignature,
         NEXUS_API_VERSION,
         AddonName,
-        { 0, 83, 0, 0 },
+        { 0, 84, 3, 0 },
         "local build",
-        "v83 UI cleanup: friendly Ultra/High/Medium/Low profiles, percentage-based FPS smoothing controls, Nexus-only loading detection, and v80 crash-safe live applies.",
+        "v84.3 adds Ambient Occlusion tier row, keeps debug window open on Esc, and disables useless downshift timing at the lowest allowed tier.",
         AddonLoad,
         AddonUnload,
         AF_None,
