@@ -160,7 +160,6 @@ void ApplyGovernorPreset(int preset)
     g_cfg.governorPreset = preset;
     g_cfg.frameTimeGovernor = true;
     g_cfg.nexusLoadingGuardEnabled = true;
-    g_cfg.loadingGuardMode = 0;
     g_cfg.stagedApplyDelayMs = 12;
     g_cfg.liveWritesEnabled = true;
     g_cfg.stagedApplyEnabled = true;
@@ -281,7 +280,6 @@ bool UpdateNexusLoadingGuard(float dt)
     {
         g_state.nexusInLoading = false;
         g_state.inLoadingGuard = false;
-        g_state.loadingTimer = 0.0f;
         g_state.postLoadingGrace = g_cfg.postLoadingGraceSeconds;
         ResetFrameStats(g_state.frameMs > 0.1f ? g_state.frameMs : TargetFrameMs()); // do not carry loading/menu FPS into gameplay decisions.
         std::ostringstream ss;
@@ -302,7 +300,6 @@ bool UpdateNexusLoadingGuard(float dt)
         g_state.inLoadingGuard = true;
         g_state.autoState = "nexus-loading";
         g_state.lowTimer = g_state.highTimer = g_state.emergencyTimer = 0.0f;
-        g_state.loadingTimer = 0.0f;
         g_state.inUpshiftProbe = false;
         g_state.probeRollbackTier = -1;
         return true;
@@ -310,15 +307,6 @@ bool UpdateNexusLoadingGuard(float dt)
 
     return false;
 }
-
-bool LoadingGuardConfiguredActive()
-{
-    if (g_cfg.loadingGuardMode == 1) { return false; }
-    if (g_cfg.loadingGuardMode == 2) { return true; }
-    // Auto: only treat ~60 FPS as loading/menu-cap when the user's target is well above 60.
-    return g_cfg.targetFps >= 90.0f;
-}
-
 
 void NormalizeGovernorTierRange()
 {
@@ -339,14 +327,6 @@ bool AutomaticTierMovementLocked()
     return g_cfg.minTier == g_cfg.maxTier;
 }
 
-bool LooksLikeLoadingFps()
-{
-    if (!LoadingGuardConfiguredActive()) { return false; }
-    float lo = g_cfg.loadingFpsCenter - g_cfg.loadingFpsWindow;
-    float hi = g_cfg.loadingFpsCenter + g_cfg.loadingFpsWindow;
-    return g_state.fps >= lo && g_state.fps <= hi && g_state.emaFps >= lo && g_state.emaFps <= hi;
-}
-
 void AutoStateLog(const std::string& line)
 {
     g_state.status = line;
@@ -359,7 +339,6 @@ void ResetAutoDecisionTimers(bool keepBackoff = true)
     g_state.lowTimer = 0.0f;
     g_state.highTimer = 0.0f;
     g_state.emergencyTimer = 0.0f;
-    g_state.loadingTimer = 0.0f;
     g_state.cooldown = 0.0f;
     g_state.probeTimer = 0.0f;
     g_state.probeBadTimer = 0.0f;
@@ -561,7 +540,7 @@ void UpdateGovernor(float dt)
            << " downMs=" << DownshiftFrameMs()
            << " stableMs=" << StableProbeFrameMs()
            << " nexusLoadingGuard=" << (g_cfg.nexusLoadingGuardEnabled ? "on" : "off")
-           << " fps60Fallback=" << (LoadingGuardConfiguredActive() ? "active" : "inactive");
+           << " loadingDetection=nexus-only";
         AutoStateLog(ss.str());
     }
     g_state.autoWasEnabled = true;
@@ -593,45 +572,7 @@ void UpdateGovernor(float dt)
         return;
     }
 
-    // Legacy target-aware 60 FPS loading/menu fallback. Auto mode disables this for 60 FPS targets.
-    if (LooksLikeLoadingFps())
-    {
-        g_state.loadingTimer += dt;
-        if (g_state.loadingTimer >= g_cfg.loadingDetectSeconds)
-        {
-            if (!g_state.inLoadingGuard)
-            {
-                std::ostringstream ss;
-                ss << "freeze reason=loading-guard fps=" << std::fixed << std::setprecision(1) << g_state.fps
-                   << " ema=" << g_state.emaFps
-                   << " target=" << g_cfg.targetFps;
-                AutoStateLog(ss.str());
-            }
-            g_state.inLoadingGuard = true;
-            g_state.autoState = "loading-guard";
-            g_state.lowTimer = g_state.highTimer = g_state.emergencyTimer = 0.0f;
-            g_state.probeBadTimer = 0.0f;
-            g_state.inUpshiftProbe = false;
-            g_state.probeRollbackTier = -1;
-            return;
-        }
-    }
-    else
-    {
-        g_state.loadingTimer = 0.0f;
-        if (g_state.inLoadingGuard)
-        {
-            g_state.inLoadingGuard = false;
-            g_state.postLoadingGrace = g_cfg.postLoadingGraceSeconds;
-            ResetFrameStats(frameMs);
-            std::ostringstream ss;
-            ss << "unfreeze reason=left-loading-guard grace=" << g_state.postLoadingGrace
-               << " fps=" << std::fixed << std::setprecision(1) << g_state.fps;
-            AutoStateLog(ss.str());
-            g_state.autoState = "post-loading-grace";
-            return;
-        }
-    }
+    // v82: legacy 60 FPS loading/menu fallback removed. Nexus IsGameplay is the only loading detector.
 
     const float targetMs = TargetFrameMs();
     const float downMs = DownshiftFrameMs();

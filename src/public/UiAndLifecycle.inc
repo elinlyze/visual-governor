@@ -1,13 +1,41 @@
 // Public Visual Governor implementation section. Contains UI, config, and governor logic.
 // Included by Addon.cpp to keep this refactor source-compatible.
 
+const char* GovernorTierName(int tier)
+{
+    static const char* kNames[] = { "Ultra", "High", "Medium", "Low" };
+    tier = std::clamp(tier, 0, kMaxGovernorTier);
+    return kNames[tier];
+}
+
+bool GovernorTierCombo(const char* label, int* value)
+{
+    int current = std::clamp(*value, 0, kMaxGovernorTier);
+    bool changed = false;
+    if (ImGui::BeginCombo(label, GovernorTierName(current)))
+    {
+        for (int t = 0; t < kGovernorTierCount; ++t)
+        {
+            const bool selected = (t == current);
+            if (ImGui::Selectable(GovernorTierName(t), selected))
+            {
+                *value = t;
+                changed = true;
+            }
+            if (selected) { ImGui::SetItemDefaultFocus(); }
+        }
+        ImGui::EndCombo();
+    }
+    return changed;
+}
+
 void DrawTierPolicy()
 {
     for (int i = 0; i < kGovernorTierCount; ++i)
     {
         int lv = GovernorTierToLimitValue(i);
         int qv = GovernorTierToQualityValue(i);
-        ImGui::BulletText("Tier %d%s: Limit %s, Quality %s", i, i == g_state.currentTier ? " (current)" : "", ModelValueName(lv), ModelValueName(qv));
+        ImGui::BulletText("%s%s: Limit %s, Quality %s", GovernorTierName(i), i == g_state.currentTier ? " (current)" : "", ModelValueName(lv), ModelValueName(qv));
     }
 }
 
@@ -56,7 +84,7 @@ void DrawGraphicsTierMatrix()
 
     if (g_state.extraGearQueueActive)
     {
-        ImGui::Text("Graphics queue: tier %d row %u/%u", g_state.extraGearQueueTier, static_cast<unsigned>(g_state.extraGearQueueIndex), static_cast<unsigned>(kExtraGearDefs.size()));
+        ImGui::Text("Graphics queue: %s row %u/%u", GovernorTierName(g_state.extraGearQueueTier), static_cast<unsigned>(g_state.extraGearQueueIndex), static_cast<unsigned>(kExtraGearDefs.size()));
         if (!g_state.extraGearQueueWaitReason.empty())
         {
             ImGui::SameLine();
@@ -64,7 +92,7 @@ void DrawGraphicsTierMatrix()
         }
     }
 
-    ImGui::TextWrapped("Tier 0 is highest visuals; Tier 3 is the lowest automatic tier. Vertical Sync is intentionally hidden from this matrix.");
+    ImGui::TextWrapped("Ultra is highest visuals; Low is the lowest automatic profile. Vertical Sync is intentionally hidden from this matrix.");
 
     if (ImGui::BeginTable("graphicsTierMatrix", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
     {
@@ -73,7 +101,7 @@ void DrawGraphicsTierMatrix()
         for (int t = 0; t < kGovernorTierCount; ++t)
         {
             char label[24];
-            std::snprintf(label, sizeof(label), "Tier %d%s", t, t == g_state.currentTier ? "*" : "");
+            std::snprintf(label, sizeof(label), "%s%s", GovernorTierName(t), t == g_state.currentTier ? "*" : "");
             ImGui::TableSetupColumn(label, ImGuiTableColumnFlags_WidthFixed, 112.0f);
         }
         ImGui::TableHeadersRow();
@@ -169,8 +197,9 @@ void DrawTierRangeControls()
 {
     int oldMinTier = g_cfg.minTier;
     int oldMaxTier = g_cfg.maxTier;
-    bool minChanged = ImGui::SliderInt("Minimum automatic tier", &g_cfg.minTier, 0, kMaxGovernorTier);
-    bool maxChanged = ImGui::SliderInt("Maximum automatic tier", &g_cfg.maxTier, 0, kMaxGovernorTier);
+    bool minChanged = GovernorTierCombo("Best automatic profile", &g_cfg.minTier);
+    bool maxChanged = GovernorTierCombo("Lowest automatic profile", &g_cfg.maxTier);
+    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Ultra = best visuals. Low = most performance saving."); }
     if (g_cfg.minTier > g_cfg.maxTier) { std::swap(g_cfg.minTier, g_cfg.maxTier); }
     if (g_cfg.controllerEnabled && (minChanged || maxChanged || oldMinTier != g_cfg.minTier || oldMaxTier != g_cfg.maxTier))
     {
@@ -179,7 +208,7 @@ void DrawTierRangeControls()
         ResetAutoDecisionTimers(false);
         ForceApplyCurrentTier("manual-tier-range-change", true);
     }
-    ImGui::Text("Active range: Tier %d .. Tier %d", g_cfg.minTier, g_cfg.maxTier);
+    ImGui::Text("Active range: %s .. %s", GovernorTierName(g_cfg.minTier), GovernorTierName(g_cfg.maxTier));
     DrawTierPolicy();
 }
 
@@ -225,15 +254,21 @@ void DrawGovernorTuningControls()
     ImGui::DragFloat("Probe rollback bad seconds", &g_cfg.probeRollbackSeconds, 0.1f, 0.05f, 5.0f, "%.2f");
     ImGui::DragFloat("Apply spacing / cooldown seconds", &g_cfg.cooldownSeconds, 0.1f, 0.0f, 10.0f, "%.1f");
     ImGui::DragFloat("Emergency hold seconds", &g_cfg.emergencySeconds, 0.1f, 0.1f, 10.0f, "%.1f");
-    ImGui::DragFloat("Fast frame-time EMA alpha", &g_cfg.frameFastAlpha, 0.01f, 0.02f, 0.90f, "%.3f");
-    ImGui::DragFloat("Slow frame-time EMA alpha", &g_cfg.frameSlowAlpha, 0.005f, 0.005f, 0.40f, "%.3f");
+    float dropReactionPct = g_cfg.frameFastAlpha * 100.0f;
+    if (ImGui::DragFloat("FPS Drop Reaction Smoothing", &dropReactionPct, 0.5f, 2.0f, 90.0f, "%.1f%%"))
+    {
+        g_cfg.frameFastAlpha = std::clamp(dropReactionPct / 100.0f, 0.02f, 0.90f);
+    }
+    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Higher = reacts faster to FPS drops. Lower = smoother, ignores more tiny spikes."); }
+    float recoveryPct = g_cfg.frameSlowAlpha * 100.0f;
+    if (ImGui::DragFloat("FPS Recovery Smoothing", &recoveryPct, 0.1f, 0.5f, 40.0f, "%.1f%%"))
+    {
+        g_cfg.frameSlowAlpha = std::clamp(recoveryPct / 100.0f, 0.005f, 0.40f);
+    }
+    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Higher = trusts recovery sooner. Lower = waits for longer stable FPS before recovering visuals."); }
 
     ImGui::Checkbox("Nexus gameplay loading guard", &g_cfg.nexusLoadingGuardEnabled);
-    static const char* guardModes[] = { "Auto", "Off", "On" };
-    ImGui::Combo("60 FPS fallback guard", &g_cfg.loadingGuardMode, guardModes, IM_ARRAYSIZE(guardModes));
-    ImGui::DragFloat("Loading guard FPS center", &g_cfg.loadingFpsCenter, 0.5f, 30.0f, 240.0f, "%.1f");
-    ImGui::DragFloat("Loading guard FPS window", &g_cfg.loadingFpsWindow, 0.1f, 0.5f, 20.0f, "%.1f");
-    ImGui::DragFloat("Loading detect seconds", &g_cfg.loadingDetectSeconds, 0.1f, 0.1f, 5.0f, "%.1f");
+    ImGui::TextDisabled("Loading detection is Nexus IsGameplay only. Legacy 60 FPS fallback removed in v82.");
     ImGui::DragFloat("Post-loading grace seconds", &g_cfg.postLoadingGraceSeconds, 0.1f, 0.0f, 10.0f, "%.1f");
 
     ImGui::Checkbox("Startup sync current profile after delay", &g_cfg.startupProfileApplyEnabled);
@@ -262,7 +297,7 @@ void DrawDebugStatsContent()
     int observedQuality = backend.observedQuality;
 
     DrawSectionLabel("Runtime");
-    ImGui::Text("Tier %d  -> Limit %s / Quality %s", g_state.currentTier, ModelValueName(GovernorTierToLimitValue(g_state.currentTier)), ModelValueName(GovernorTierToQualityValue(g_state.currentTier)));
+    ImGui::Text("Profile %s  -> Limit %s / Quality %s", GovernorTierName(g_state.currentTier), ModelValueName(GovernorTierToLimitValue(g_state.currentTier)), ModelValueName(GovernorTierToQualityValue(g_state.currentTier)));
     ImGui::Text("FPS %.1f  EMA %.1f  frame ms now %.2f fast %.2f slow %.2f p95 %.2f", g_state.uiFps, g_state.emaFps, g_state.frameMs, g_state.fastFrameMs, g_state.slowFrameMs, g_state.p95FrameMs);
     ImGui::Text("Observed: Limit %s  Quality %s", ModelValueName(observedLimit), ModelValueName(observedQuality));
     ImGui::TextWrapped("Status: %s", g_state.status.c_str());
@@ -285,7 +320,7 @@ void DrawDebugStatsContent()
 
     DrawSectionLabel("Apply queues");
     ImGui::Text("Model apply queue: %s step=%d reason=%s", g_state.stagedActive ? "active" : "idle", g_state.stagedStep, g_state.stagedReason.c_str());
-    ImGui::Text("Graphics queue: %s tier=%d row=%u reason=%s", g_state.extraGearQueueActive ? "active" : "idle", g_state.extraGearQueueTier, static_cast<unsigned>(g_state.extraGearQueueIndex), g_state.extraGearQueueReason.c_str());
+    ImGui::Text("Graphics queue: %s profile=%s row=%u reason=%s", g_state.extraGearQueueActive ? "active" : "idle", GovernorTierName(g_state.extraGearQueueTier), static_cast<unsigned>(g_state.extraGearQueueIndex), g_state.extraGearQueueReason.c_str());
     if (!g_state.extraGearQueueWaitReason.empty())
     {
         ImGui::Text("Graphics wait: %s %.1fs", g_state.extraGearQueueWaitReason.c_str(), g_state.extraGearQueueBlockedSeconds);
@@ -415,14 +450,14 @@ void DrawTierOverlay()
         ImGui::SetNextWindowPos(ImVec2(18.0f, 120.0f), ImGuiCond_FirstUseEver);
     }
 
-    ImGui::SetNextWindowSize(ImVec2(72, 30), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(92, 30), ImGuiCond_FirstUseEver);
     ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize
         | ImGuiWindowFlags_NoTitleBar
         | ImGuiWindowFlags_NoCollapse
         | ImGuiWindowFlags_NoScrollbar;
     if (ImGui::Begin(TierOverlayWindowName, nullptr, flags))
     {
-        ImGui::Text("Tier %d", g_state.currentTier);
+        ImGui::TextUnformatted(GovernorTierName(g_state.currentTier));
         ImVec2 p = ImGui::GetWindowPos();
         if (!g_cfg.tierOverlayPosValid || std::fabs(g_cfg.tierOverlayPosX - p.x) > 0.5f || std::fabs(g_cfg.tierOverlayPosY - p.y) > 0.5f)
         {

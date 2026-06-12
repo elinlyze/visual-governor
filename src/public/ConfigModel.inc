@@ -71,11 +71,7 @@ struct Config
     float cooldownSeconds = 0.70f;            // small apply spacing after downshifts
     float emaAlpha = 0.10f;
     float emergencySeconds = 0.5f;
-    bool nexusLoadingGuardEnabled = true;     // v22: Comfy-style loading detection via NexusLinkData::IsGameplay
-    int loadingGuardMode = 0;                 // 0=Auto, 1=Off, 2=On for the legacy 60 FPS fallback
-    float loadingFpsCenter = 60.0f;
-    float loadingFpsWindow = 2.5f;
-    float loadingDetectSeconds = 0.5f;
+    bool nexusLoadingGuardEnabled = true;     // NexusLinkData::IsGameplay loading detection. Legacy 60 FPS fallback removed in v82.
     float postLoadingGraceSeconds = 2.5f;
     int minTier = 0;
     int maxTier = kMaxGovernorTier;
@@ -85,8 +81,8 @@ struct Config
     float startupProfileApplyDelaySeconds = 2.0f;
     int governorPreset = 1;                    // 0=Swift, 1=Balanced, 2=Calm
     bool frameTimeGovernor = true;             // v24: DRS-style frame-time gearbox instead of raw FPS switching
-    float frameFastAlpha = 0.28f;              // fast frame-time EMA
-    float frameSlowAlpha = 0.055f;             // slow frame-time EMA
+    float frameFastAlpha = 0.28f;              // FPS Drop Reaction Smoothing, stored as 0.28 = 28%
+    float frameSlowAlpha = 0.055f;             // FPS Recovery Smoothing, stored as 0.055 = 5.5%
     float probeWarmupSeconds = 1.1f;           // ignore immediate apply/rebuild turbulence during an upshift probe
     float probeRollbackSeconds = 1.25f;        // sustained bad time required before rolling back a probe
     float maxProbeBackoffSeconds = 160.0f;     // exponential failed-probe backoff cap
@@ -332,7 +328,6 @@ struct State
     float highTimer = 0.0f;
     float cooldown = 0.0f;
     float emergencyTimer = 0.0f;
-    float loadingTimer = 0.0f;
     float postLoadingGrace = 0.0f;
     bool nexusTimingInitialized = false;
     bool nexusWasGameplay = false;
@@ -415,7 +410,7 @@ void SaveConfig()
     try
     {
         std::ofstream out(g_configPath, std::ios::binary | std::ios::trunc);
-        out << "configVersion=80\n";
+        out << "configVersion=83\n";
         out << "windowVisible=" << (g_cfg.windowVisible ? 1 : 0) << "\n";
         out << "tierOverlayVisible=" << (g_cfg.tierOverlayVisible ? 1 : 0) << "\n";
         out << "tierOverlayPosValid=" << (g_cfg.tierOverlayPosValid ? 1 : 0) << "\n";
@@ -447,10 +442,6 @@ void SaveConfig()
         out << "cooldownSeconds=" << g_cfg.cooldownSeconds << "\n";
         out << "emergencySeconds=" << g_cfg.emergencySeconds << "\n";
         out << "nexusLoadingGuardEnabled=" << (g_cfg.nexusLoadingGuardEnabled ? 1 : 0) << "\n";
-        out << "loadingGuardMode=" << g_cfg.loadingGuardMode << "\n";
-        out << "loadingFpsCenter=" << g_cfg.loadingFpsCenter << "\n";
-        out << "loadingFpsWindow=" << g_cfg.loadingFpsWindow << "\n";
-        out << "loadingDetectSeconds=" << g_cfg.loadingDetectSeconds << "\n";
         out << "postLoadingGraceSeconds=" << g_cfg.postLoadingGraceSeconds << "\n";
         out << "emaAlpha=" << g_cfg.emaAlpha << "\n";
         out << "minTier=" << g_cfg.minTier << "\n";
@@ -565,10 +556,7 @@ void LoadConfig()
             else if (k == "cooldownSeconds") { g_cfg.cooldownSeconds = f(); }
             else if (k == "emergencySeconds") { g_cfg.emergencySeconds = f(); }
             else if (k == "nexusLoadingGuardEnabled") { g_cfg.nexusLoadingGuardEnabled = i() != 0; }
-            else if (k == "loadingGuardMode") { g_cfg.loadingGuardMode = i(); }
-            else if (k == "loadingFpsCenter") { g_cfg.loadingFpsCenter = f(); }
-            else if (k == "loadingFpsWindow") { g_cfg.loadingFpsWindow = f(); }
-            else if (k == "loadingDetectSeconds") { g_cfg.loadingDetectSeconds = f(); }
+            // v82: legacy loadingGuardMode/loadingFpsCenter/loadingFpsWindow/loadingDetectSeconds keys are ignored.
             else if (k == "postLoadingGraceSeconds") { g_cfg.postLoadingGraceSeconds = f(); }
             else if (k == "emaAlpha") { g_cfg.emaAlpha = f(); }
             else if (k == "minTier") { g_cfg.minTier = i(); }
@@ -824,12 +812,10 @@ void LoadConfig()
     }
     g_cfg.minTier = std::clamp(g_cfg.minTier, 0, kMaxGovernorTier);
     g_cfg.maxTier = std::clamp(g_cfg.maxTier, 0, kMaxGovernorTier);
-    g_cfg.loadingGuardMode = std::clamp(g_cfg.loadingGuardMode, 0, 2);
     g_cfg.downRepeatSeconds = std::clamp(g_cfg.downRepeatSeconds, 0.1f, 10.0f);
     g_cfg.upProbeSeconds = std::clamp(g_cfg.upProbeSeconds, 0.5f, 30.0f);
     g_cfg.upProbeBackoffSeconds = std::clamp(g_cfg.upProbeBackoffSeconds, 0.0f, 300.0f);
     g_cfg.emergencySeconds = std::clamp(g_cfg.emergencySeconds, 0.1f, 10.0f);
-    g_cfg.loadingDetectSeconds = std::clamp(g_cfg.loadingDetectSeconds, 0.1f, 5.0f);
     g_cfg.postLoadingGraceSeconds = std::clamp(g_cfg.postLoadingGraceSeconds, 0.0f, 10.0f);
     g_cfg.extraGearApplySpacingMs = std::clamp(g_cfg.extraGearApplySpacingMs, 50, 5000);
     g_cfg.manualLimitValue = std::clamp(g_cfg.manualLimitValue, 0, 4);
