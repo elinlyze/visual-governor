@@ -1,3 +1,0 @@
-LIBRARY "visual_governor"
-EXPORTS
-    GetAddonDef
